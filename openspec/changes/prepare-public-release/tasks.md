@@ -68,9 +68,9 @@
 ## 8. GitHub setup
 
 - [x] 8.1 Create the private repository `joe-allen/design-steering` with `gh repo create --private` without pushing. The owner then creates the GitHub App (Contents, Pull requests and Issues set to read and write), installs it on this repository only, and stores `RELEASE_APP_ID` as a repository variable and the private key as the secret `RELEASE_APP_PRIVATE_KEY`. Verify with `gh repo view` (visibility private), `gh variable list` and `gh secret list`
-- [ ] 8.2 Push `main`. Verify that the "Release" run succeeds and opens the pull request "chore(release): release 0.1.0" authored by the App, and that "PR title", "Checks" and "Windows installer" run on it and pass
+- [x] 8.2 Push `main`. Verify that the "Release" run succeeds and opens the pull request "chore(release): release 0.1.0" authored by the App, and that "PR title", "Checks" and "Windows installer" run on it and pass
 - [x] 8.3 Apply the merge settings through `gh api`: squash only, squash title from the pull request title, blank message, delete branches after merging. Verify by reading the settings back with `gh api repos/joe-allen/design-steering`
-- [ ] 8.4 Add the `main` ruleset through `gh api`: pull request required with 0 approvals, required checks "PR title", "Checks" and "Windows installer", force pushes and deletion blocked, no bypass actors. Verify that:
+- [x] 8.4 Add the `main` ruleset through `gh api`: pull request required with 0 approvals, required checks "PR title", "Checks" and "Windows installer", force pushes and deletion blocked, no bypass actors. Verify that:
   - a direct push of an empty commit to `main` is rejected
   - a throwaway pull request titled "Update readme" fails the title check and cannot be merged
   - retitled "docs: update readme", it passes
@@ -79,9 +79,9 @@
 
 ## 9. First release (v0.1.0)
 
-- [ ] 9.1 On the release pull request, download the Windows installer artifact. Verify that its file name contains 0.1.0, that no MSI was produced, and that `check:version` passed with every version file at 0.1.0
-- [ ] 9.2 With the owner, rewrite the 0.1.0 entry in the release branch's `CHANGELOG.md` and in the pull request description: a short summary of what Design Steering does, plus the note that the Windows installer is untested. Verify both texts match
-- [ ] 9.3 Merge the release pull request. Verify that:
+- [x] 9.1 On the release pull request, download the Windows installer artifact. Verify that its file name contains 0.1.0, that no MSI was produced, and that `check:version` passed with every version file at 0.1.0
+- [x] 9.2 With the owner, rewrite the 0.1.0 entry in the release branch's `CHANGELOG.md` and in the pull request description: a short summary of what Design Steering does, plus the note that the Windows installer is untested. Verify both texts match
+- [x] 9.3 Merge the release pull request. Verify that:
   - the tag `v0.1.0` points at the merge commit
   - the draft release receives the arm64 `.dmg`, x64 `.dmg` and `-setup.exe`
   - the publish job undrafts it, and the published release has exactly those three installers and the edited notes

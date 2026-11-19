@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/joe-allen/design-steering/compare/v0.1.0...v0.1.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **packaging:** ad-hoc sign the macOS app so macOS no longer says it is damaged ([#7](https://github.com/joe-allen/design-steering/issues/7)) ([f5e2924](https://github.com/joe-allen/design-steering/commit/f5e29244780ccce3039b1211d0effb0db601f33e))
+
 ## 0.1.0 (2026-11-19)
 
 First release of Design Steering. It pulls the comments from one Figma page and turns them into a markdown design critique, with a screenshot of each commented frame marked with numbered pins. Use it as a desktop app for macOS and Windows, or run the same two scripts from the command line.

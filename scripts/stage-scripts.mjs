@@ -60,6 +60,13 @@ execFileSync(
 // The scripts never run bin shims, and symlinks are awkward to bundle.
 rmSync(join(stageDir, 'node_modules', '.bin'), { recursive: true, force: true });
 
+// npm 10 installs the dependencies of skipped optional packages: sharp's wasm32-only
+// @img/sharp-webcontainers-wasm32 is skipped, but its @img/sharp-wasm32 and @emnapi/runtime are not.
+// No target uses the WebAssembly build, because each one bundles its native binary.
+for (const orphan of ['@img/sharp-wasm32', '@emnapi']) {
+  rmSync(join(stageDir, 'node_modules', orphan), { recursive: true, force: true });
+}
+
 function verify() {
   const modules = join(stageDir, 'node_modules');
   const problems = [];

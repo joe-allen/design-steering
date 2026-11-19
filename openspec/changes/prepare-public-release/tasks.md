@@ -58,7 +58,7 @@
 - [x] 7.1 Move the two `crit-2026-11-13-*` folders to a location outside the project that the owner confirms. Verify that no `*-design-critique*` folder remains in the project
 - [x] 7.2 Run the full local verification: `npm ci`, `format:check`, `lint`, `check`, `lint:rust`, `npm test`, `check:config`, `check:version`, `npm run build`, then `npm run stage` and `npm run tauri build -- --bundles app`. Verify each passes and that the built app's Settings shows "Version 0.0.0"
 - [x] 7.3 Move the existing `.git` folder to a backup location outside the project that the owner confirms, run `git init -b main`, and set the repository's `user.name` to "Joe Allen" and `user.email` to `18443374+joe-allen@users.noreply.github.com`. Verify with `git config --local --list` and that the backup holds the old history (`git --git-dir=<backup> log --oneline` shows the 9 commits)
-- [ ] 7.4 Stage everything and audit before committing:
+- [x] 7.4 Stage everything and audit before committing:
   - the staged file list has no `.env`, run folder, `*-figma-comments*.json` or `.DS_Store`
   - the real Figma file key from `.env` appears in no staged file
   - every `figd_` value is a known placeholder or test value
@@ -67,9 +67,9 @@
 
 ## 8. GitHub setup
 
-- [ ] 8.1 Create the private repository `joe-allen/design-steering` with `gh repo create --private` without pushing. The owner then creates the GitHub App (Contents, Pull requests and Issues set to read and write), installs it on this repository only, and stores `RELEASE_APP_ID` as a repository variable and the private key as the secret `RELEASE_APP_PRIVATE_KEY`. Verify with `gh repo view` (visibility private), `gh variable list` and `gh secret list`
+- [x] 8.1 Create the private repository `joe-allen/design-steering` with `gh repo create --private` without pushing. The owner then creates the GitHub App (Contents, Pull requests and Issues set to read and write), installs it on this repository only, and stores `RELEASE_APP_ID` as a repository variable and the private key as the secret `RELEASE_APP_PRIVATE_KEY`. Verify with `gh repo view` (visibility private), `gh variable list` and `gh secret list`
 - [ ] 8.2 Push `main`. Verify that the "Release" run succeeds and opens the pull request "chore(release): release 0.1.0" authored by the App, and that "PR title", "Checks" and "Windows installer" run on it and pass
-- [ ] 8.3 Apply the merge settings through `gh api`: squash only, squash title from the pull request title, blank message, delete branches after merging. Verify by reading the settings back with `gh api repos/joe-allen/design-steering`
+- [x] 8.3 Apply the merge settings through `gh api`: squash only, squash title from the pull request title, blank message, delete branches after merging. Verify by reading the settings back with `gh api repos/joe-allen/design-steering`
 - [ ] 8.4 Add the `main` ruleset through `gh api`: pull request required with 0 approvals, required checks "PR title", "Checks" and "Windows installer", force pushes and deletion blocked, no bypass actors. Verify that:
   - a direct push of an empty commit to `main` is rejected
   - a throwaway pull request titled "Update readme" fails the title check and cannot be merged

@@ -93,7 +93,7 @@
 
 - [x] 10.1 Set `bundle.macOS.signingIdentity` to `-` in `src-tauri/tauri.conf.json`, and make `check:config` require it. Verify that `npm run check:config` passes, and that an ad-hoc signed local build's app passes `codesign --verify --deep --strict` with all bundled resources sealed, where the v0.1.0 app fails it
 - [x] 10.2 Rewrite the README's macOS first-launch step: "Not Opened", then Done, then Privacy & Security > Open Anyway, with the `xattr` command as the fallback and for v0.1.0. Verify with the owner on macOS 26 that a quarantined copy of the ad-hoc signed `.dmg` shows "Not Opened" and that Open Anyway launches the app
-- [ ] 10.3 Add the "Check the macOS app signature" step to `.github/workflows/build.yml`, and assert it in `tests/release.test.mjs`. Verify with actionlint and `npm run test:scripts`, and with a dispatched macOS build of the branch in which the step passes for both arm64 and x64
+- [x] 10.3 Add the "Check the macOS app signature" step to `.github/workflows/build.yml`, and assert it in `tests/release.test.mjs`. Verify with actionlint and `npm run test:scripts`, and with a dispatched macOS build of the branch in which the step passes for both arm64 and x64
 - [ ] 10.4 Merge PR #6 (which removes `release-as`), then the fix pull request, then the release pull request proposing 0.1.1. Verify that the v0.1.1 release is published with its three installers, and that the app in its downloaded arm64 `.dmg` passes `codesign --verify --deep --strict`
 
 ## Workflow follow-up

@@ -1,0 +1,165 @@
+:root {
+  --ink: #1a1a1a;
+  --surface: #eaeaea;
+  --surface-item: #f5f5f5;
+  --surface-item-hover: #ffffff;
+  --surface-active: #eaeaea;
+  --nav-item: #f5f5f5;
+  --card: #ffffff;
+  --muted: #9a9a9a;
+  --accent: #1d6a99;
+  --danger: #b3261e;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  color: var(--ink);
+}
+
+body {
+  margin: 0;
+  background: #fff;
+  accent-color: var(--ink);
+}
+
+h1 {
+  margin-block: 0 24px;
+  margin-inline: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.screen {
+  container-name: screen;
+  container-type: inline-size;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  padding: 32px;
+  gap: 16px;
+  overflow: auto;
+}
+
+.scroll {
+  flex: 1;
+  min-block-size: 0;
+  overflow: auto;
+  padding-block: 32px;
+  padding-inline: 0;
+  scrollbar-width: none;
+  scrollbar-color: var(--ink) var(--surface);
+  scrollbar-gutter: both stable;
+}
+
+/* inputs */
+
+input {
+  &[type='text'],
+  &[type='password'],
+  &[type='search'] {
+    min-block-size: 48px;
+  }
+
+  &:focus {
+    outline: 2px solid;
+    outline-offset: -2px;
+  }
+}
+
+/* buttons / actions */
+
+button {
+  position: relative;
+  isolation: isolate;
+  min-block-size: 48px;
+  font-weight: 700;
+
+  &:focus {
+    outline: 2px solid;
+    outline-offset: -2px;
+  }
+
+  &:active {
+    translate: 0 1px;
+    scale: 0.99;
+  }
+}
+
+button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  box-shadow: 1px 2px 1px rgb(0 0 0 / 8%);
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+
+button:hover::after {
+  opacity: 0;
+}
+
+/* button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  box-shadow: 1px 2px 1px rgb(0 0 0 / 8%);
+  pointer-events: none;
+}
+
+button:hover::before {
+  box-shadow: inset 1px 1px 1px rgb(0 0 0 / 8%);
+} */
+
+@media (prefers-reduced-motion: reduce) {
+  button::after {
+    transition: none;
+  }
+}
+
+.page-form .action {
+  align-self: flex-end;
+}
+
+.action:has(svg) {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+}
+
+.action {
+  padding-block: 0;
+  padding-inline: 16px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+  block-size: 48px;
+  cursor: pointer;
+}
+
+.action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.action svg {
+  display: block;
+  inline-size: 24px;
+  block-size: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

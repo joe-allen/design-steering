@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# One release run at a time; a newer push waits instead of cancelling a release in progress.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release-please:
+    name: Release pull request
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # Pull requests and tags created with GITHUB_TOKEN do not trigger other workflows, so the
+      # release pull request would never get its required checks.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      # Opens or updates the release pull request; when that pull request is merged, creates the
+      # draft release and its tag.
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    name: Installers
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      platforms: all
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
+  # Runs only when every installer build succeeded; otherwise the release stays a draft.
+  publish:
+    name: Publish
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check the draft's installers
+        run: |
+          ARTIFACT_PATHS="$(gh release view "$TAG" --json assets --jq '[.assets[].name]')" \
+            node scripts/check-artifacts.mjs release "${TAG#v}"
+
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false --latest

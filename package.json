@@ -1,0 +1,70 @@
+{
+  "name": "design-steering",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "fetch": "node --env-file-if-exists=.env _1-fetch-figma-comments.mjs",
+    "generate": "node _2-generate-design-critique.mjs",
+    "critique": "npm run fetch && npm run generate",
+    "test:scripts": "node --test \"tests/**/*.test.mjs\"",
+    "dev": "vite",
+    "build": "vite build",
+    "test:app": "vitest run",
+    "test": "npm run test:scripts && npm run test:app && npm run test:rust",
+    "tauri": "tauri",
+    "check:config": "node scripts/check-tauri-config.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "stage": "node scripts/stage-scripts.mjs",
+    "format": "prettier --write . && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:check": "prettier --check . && cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "lint": "eslint .",
+    "check": "svelte-check --fail-on-warnings",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "prepare": "simple-git-hooks"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npx lint-staged"
+  },
+  "lint-staged": {
+    "*.{js,mjs,svelte}": [
+      "eslint --fix --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{css,json,md,yml,yaml,html}": "prettier --write",
+    "*.rs": "rustfmt --edition 2021"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-opener": "^2.7.3",
+    "@tauri-apps/plugin-store": "^2.5.1",
+    "dompurify": "^3.4.17",
+    "marked": "^18.2.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@fission-ai/openspec": "^2.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.12.4",
+    "@testing-library/svelte": "^5.4.2",
+    "@testing-library/user-event": "^14.6.10",
+    "eslint": "^10.15.0",
+    "eslint-plugin-svelte": "^3.24.1",
+    "globals": "^17.14.0",
+    "jsdom": "^31.0.1",
+    "lint-staged": "^17.6.1",
+    "prettier": "^3.10.1",
+    "prettier-plugin-svelte": "^4.2.0",
+    "simple-git-hooks": "^2.14.0",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}

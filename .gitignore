@@ -1,0 +1,10 @@
+.env
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+src-tauri/resources/scripts/*
+!src-tauri/resources/scripts/.gitkeep
+.DS_Store
+/*-design-critique/
+/*-design-critique-*/

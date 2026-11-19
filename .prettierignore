@@ -1,0 +1,16 @@
+# Build output
+dist
+src-tauri/target
+src-tauri/gen
+src-tauri/resources/scripts
+
+package-lock.json
+
+# Owned by release-please
+CHANGELOG.md
+
+# Managed by OpenSpec
+openspec/
+.agents/
+
+ui-design/

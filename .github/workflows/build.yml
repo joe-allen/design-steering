@@ -1,0 +1,119 @@
+name: Build installers
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: Which installers to build (windows, macos or all)
+        type: string
+        required: true
+      tag:
+        description: Release tag (vX.Y.Z). When set, the installers are attached to that draft release instead of uploaded as artifacts.
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which installers to build
+        type: choice
+        options: [macos, windows, all]
+        default: macos
+
+jobs:
+  targets:
+    name: Targets
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          # The x64 macOS installer is cross-built on the arm64 runner; staging picks the x64 sharp binaries.
+          TARGETS: |
+            [
+              { "platform": "macos", "name": "macOS arm64", "os": "macos-latest", "target": "aarch64-apple-darwin", "stage": "darwin-arm64", "bundle": "dmg" },
+              { "platform": "macos", "name": "macOS x64", "os": "macos-latest", "target": "x86_64-apple-darwin", "stage": "darwin-x64", "bundle": "dmg" },
+              { "platform": "windows", "name": "Windows x64", "os": "windows-latest", "target": "x86_64-pc-windows-msvc", "stage": "win32-x64", "bundle": "nsis" }
+            ]
+        run: |
+          case "$PLATFORMS" in
+            windows|macos|all) ;;
+            *) echo "::error::platforms must be windows, macos or all, not '$PLATFORMS'"; exit 1 ;;
+          esac
+          echo "include=$(jq -c --arg p "$PLATFORMS" '[.[] | select($p == "all" or .platform == $p)]' <<< "$TARGETS")" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: targets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.targets.outputs.include) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - run: npm ci
+
+      # Fails the build if the bundle identifier, CSP or capabilities drift from the spec.
+      - run: npm run check:config
+
+      # With a tag, a version that does not match it fails here, before anything is compiled.
+      - run: node scripts/check-version.mjs ${{ inputs.tag }}
+
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # The x64 macOS binary cannot run on the arm64 runner, which already runs clippy and the tests.
+      - run: npm run lint:rust
+        if: matrix.target != 'x86_64-apple-darwin'
+
+      - run: npm run test:rust
+        if: matrix.target != 'x86_64-apple-darwin'
+
+      - run: node scripts/stage-scripts.mjs ${{ matrix.stage }}
+
+      # With a tag, tauri-action attaches the installer to the draft release that release-please created.
+      - uses: tauri-apps/tauri-action@v1
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseDraft: true
+          uploadUpdaterJson: false
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundle }}
+
+      - name: Check the produced installers
+        run: node scripts/check-artifacts.mjs ${{ matrix.bundle }} ${{ steps.version.outputs.version }}
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !inputs.tag }}
+        with:
+          name: design-steering-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 7

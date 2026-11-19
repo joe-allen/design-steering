@@ -99,7 +99,7 @@ The ruleset on `main`:
 - `draft: true` and `force-tag-creation: true`. A draft release normally has no tag until it is published; forcing the tag lets release-please find the previous release.
 - `pull-request-title-pattern: "chore(release): release ${version}"`. Its `release` scope passes the title check, and `chore` keeps it out of the changelog.
 - `changelog-sections`: Features, Bug Fixes, Performance and Reverts are shown; docs, style, refactor, test, build, ci and chore are hidden. Breaking changes get their own section automatically.
-- `extra-files`: TOML updaters for `src-tauri/Cargo.toml` (`$.package.version`) and `src-tauri/Cargo.lock` (`$.package[?(@.name==='design-steering')].version`).
+- `extra-files`: TOML updaters for `src-tauri/Cargo.toml` (`$.package.version`) and `src-tauri/Cargo.lock` (`$.package[?(@.name.value==='design-steering')].version`). release-please parses TOML values as `{start, end, value}` objects, so the filter compares `@.name.value`.
 
 `.release-please-manifest.json` starts as `{".": "0.0.0"}`, and `package.json` and `Cargo.toml` start at `0.0.0`. The `feat` root commit then makes the first release PR propose 0.1.0. Builds made before the first release honestly report 0.0.0.
 

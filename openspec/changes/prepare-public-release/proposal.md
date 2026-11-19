@@ -15,7 +15,7 @@ Design Steering exists only as a local repository. Its release workflow has neve
 - **App version in Settings.** The Settings screen shows the installed app's version, so bug reports can say which build they came from.
 - **Documentation.** The README covers the contribution and release process. The development Node minimum becomes 22.12 (the build tools need it); the minimum for users stays 22.9. It also notes that the Windows installer has not yet been tested on a Windows PC.
 
-Out of scope: Linux installers or any Linux build of the app, code signing and notarization, auto-update, switching the repository to public, Dependabot and CodeQL, pinned toolchains, testing the scripts on Node 22.9 in CI, an app log file, the dev-dependency security advisories, and type-checking plain JavaScript.
+Out of scope: Linux installers or any Linux build of the app, signing with an Apple Developer ID or a Windows code-signing certificate and notarization (the macOS app is only ad-hoc signed), auto-update, switching the repository to public, Dependabot and CodeQL, pinned toolchains, testing the scripts on Node 22.9 in CI, an app log file, the dev-dependency security advisories, and type-checking plain JavaScript.
 
 ## Capabilities
 
@@ -25,7 +25,7 @@ Out of scope: Linux installers or any Linux build of the app, code signing and n
 
 ### Modified Capabilities
 
-- `app-packaging`: Installers are built when a release is created through the release process, not when a tag is pushed. A release is published only with its complete set of installers. Every artifact carries the same version as the release. The Windows installer is also built for every pull request.
+- `app-packaging`: Installers are built when a release is created through the release process, not when a tag is pushed. A release is published only with its complete set of installers. Every artifact carries the same version as the release. The Windows installer is also built for every pull request. The macOS app is ad-hoc signed, so a downloaded copy is no longer reported as damaged, and the README's macOS first-launch steps change to match current macOS.
 - `app-settings`: The Settings screen shows the app's version.
 
 ## Impact

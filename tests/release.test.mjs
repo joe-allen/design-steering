@@ -41,6 +41,11 @@ test('build workflow produces two dmg and one -setup.exe, and runs the config an
   assert.deepEqual(bundles.sort(), ['dmg', 'dmg', 'nsis']);
   assert.ok(workflow.includes('npm run check:config'), 'identifier check must run in the build workflow');
   assert.ok(workflow.includes('scripts/check-version.mjs'), 'version check must run in the build workflow');
+  assert.match(
+    workflow,
+    /if: matrix\.platform == 'macos'\n\s+run: \|[\s\S]*?codesign --verify --deep --strict/,
+    'macOS builds must verify the app signature',
+  );
 });
 
 test('CI has the required jobs, and its title check allows exactly the types and scopes in the spec', async () => {

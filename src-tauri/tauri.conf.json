@@ -47,6 +47,9 @@
     "resources": {
       "resources/scripts/": "scripts/"
     },
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser"

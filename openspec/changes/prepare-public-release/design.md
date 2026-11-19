@@ -168,6 +168,21 @@ A failure names each file and the version it holds. `check-artifacts.mjs` gains 
 - `.github/pull_request_template.md` reminds contributors of the title format, scopes, `!` for breaking changes, and writing titles for users.
 - The README's "Build from source" and "Contributing" sections describe the tools, the hook and the release process. Its install section notes that the Windows installer is built automatically but untested on a Windows PC.
 
+### 11. Ad-hoc signing for macOS
+
+The v0.1.0 macOS app carried only the signature the linker adds to an arm64 executable. The bundle itself was unsigned (`Info.plist=not bound`, `Sealed Resources=none`), so `codesign --verify` fails on it. Once a browser adds the quarantine flag, Gatekeeper treats a signature that fails to verify as tampering, and reports the app as "damaged" with no way to override.
+
+`bundle.macOS.signingIdentity` is set to `-`. The Tauri bundler then ad-hoc signs the executable and the bundle, sealing every resource, including the bundled scripts and `node_modules`. A downloaded copy is then only "not verified", which users can allow once with "Open Anyway" in Privacy & Security (macOS 15 and later no longer accept right-click > Open for this). The bundler also turns on the hardened runtime when it signs. That does not affect the Node child process, which is signed separately.
+
+Two guards keep it in place:
+
+- `check:config` requires `signingIdentity` to be `-`.
+- Each macOS build mounts its `.dmg` and runs `codesign --verify --deep --strict` on the app. In release mode, tauri-action has already attached the installer by then. A failure still fails the job, so `publish` never runs and the release stays a draft.
+
+A Developer ID certificate would set `APPLE_SIGNING_IDENTITY`, which takes precedence over the config, so this does not block real signing later.
+
+*Alternatives:* running `codesign --force --deep --sign -` in the workflow after the build would also re-sign the app, but the `.dmg` would then need rebuilding. Documenting only the `xattr` command leaves every user with a "damaged" error and no way past it in the macOS UI.
+
 ## Risks / Trade-offs
 
 - **The draft-release behavior of release-please (`force-tag-creation`) or tauri-action differs from the docs.** → The first release run is the test. On any failure the release stays a draft, which is safe. The fallback upload is `gh release upload`, and the publish job's asset check stops a partial release.

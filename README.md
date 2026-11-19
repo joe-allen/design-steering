@@ -24,12 +24,14 @@ The app runs these same two scripts for you.
    - macOS, Intel: the `x64` `.dmg`.
    - Windows: the `-setup.exe`. Run it. It installs the Microsoft WebView2 runtime if your PC lacks it. The Windows installer is built and checked automatically, but has not yet been tested on a Windows PC.
 
-3. Open the app the first time. The builds are not signed, so your system warns about them once:
-   - **macOS:** if Gatekeeper blocks the app, right-click (or Control-click) **Design Steering** in Applications, choose **Open**, then choose **Open** again. Or remove the quarantine flag in a terminal and open the app normally:
+3. Open the app the first time. The builds are not signed with an Apple or Microsoft developer certificate, so your system warns about them once:
+   - **macOS:** opening the app shows "Design Steering Not Opened" because Apple could not verify it. Click **Done**, open **System Settings > Privacy & Security**, scroll to **Security**, click **Open Anyway** next to Design Steering, and confirm with your password or Touch ID. Or remove the quarantine flag in a terminal and open the app normally:
 
      ```sh
      xattr -dr com.apple.quarantine "/Applications/Design Steering.app"
      ```
+
+     Version 0.1.0 is reported as "damaged and can't be opened" instead. Use the command above for it, or install a later version.
 
    - **Windows:** if SmartScreen shows "Windows protected your PC", click **More info**, then **Run anyway**.
 

@@ -12,6 +12,11 @@ const capability = readJson('capabilities/default.json');
 
 assert.equal(conf.identifier, 'com.designsteering.desktop', 'bundle identifier must stay fixed');
 assert.deepEqual([...conf.bundle.targets].sort(), ['dmg', 'nsis'], 'bundle targets must be dmg and nsis only');
+assert.equal(
+  conf.bundle.macOS?.signingIdentity,
+  '-',
+  'the macOS app must be ad-hoc signed, or macOS reports a downloaded copy as damaged',
+);
 
 for (const key of ['csp', 'devCsp']) {
   const csp = conf.app.security[key];

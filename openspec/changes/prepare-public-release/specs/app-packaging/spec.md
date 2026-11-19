@@ -29,6 +29,26 @@ The project SHALL produce a Windows installer as an NSIS `-setup.exe` for x64, a
 - **WHEN** a pull request is opened or updated
 - **THEN** exactly one `-setup.exe` and no MSI is built for it, and the `-setup.exe` can be downloaded from the pull request's checks
 
+### Requirement: Unsigned builds are documented
+Installers SHALL NOT be signed with an Apple Developer ID or a Windows code-signing certificate, and SHALL NOT be notarized. The macOS app SHALL carry a valid ad-hoc signature covering the whole app bundle, so that macOS offers to open a downloaded copy instead of reporting it as damaged. The README SHALL explain how to open the app on macOS and Windows.
+
+#### Scenario: First launch on macOS
+- **WHEN** a user follows the README steps for macOS after macOS blocks the app
+- **THEN** the README tells them how to open it anyway ("Open Anyway" in Privacy & Security, or removing the quarantine attribute)
+
+#### Scenario: Downloaded macOS app is not reported as damaged
+- **GIVEN** the arm64 `.dmg` was downloaded from a release with a web browser
+- **WHEN** the user opens the app from Applications
+- **THEN** macOS says it could not verify the app, not that the app is damaged, and Privacy & Security offers "Open Anyway"
+
+#### Scenario: Signature checked in every macOS build
+- **WHEN** a macOS installer is built
+- **THEN** the build fails unless the app inside the `.dmg` passes strict signature verification
+
+#### Scenario: First launch on Windows
+- **WHEN** a user follows the README steps for Windows after SmartScreen warns
+- **THEN** the README tells them how to continue past the warning ("More info", then "Run anyway")
+
 ## ADDED Requirements
 
 ### Requirement: Complete releases only

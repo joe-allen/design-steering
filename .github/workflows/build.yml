@@ -108,6 +108,15 @@ jobs:
         env:
           ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
 
+      # macOS reports a downloaded app as "damaged" when its bundle signature does not verify.
+      - name: Check the macOS app signature
+        if: matrix.platform == 'macos'
+        run: |
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          trap 'hdiutil detach "$mnt" -quiet' EXIT
+          codesign --verify --deep --strict --verbose=2 "$mnt/Design Steering.app"
+
       - uses: actions/upload-artifact@v7
         if: ${{ !inputs.tag }}
         with:

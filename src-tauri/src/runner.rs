@@ -278,7 +278,7 @@ pub fn scripts_dir(bundled: &Path) -> Result<PathBuf, String> {
     #[cfg(debug_assertions)]
     {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        return select_scripts_dir(bundled, Some(&repo));
+        select_scripts_dir(bundled, Some(&repo))
     }
     #[cfg(not(debug_assertions))]
     {

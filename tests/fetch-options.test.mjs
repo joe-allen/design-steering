@@ -19,16 +19,39 @@ const tempDir = () => {
 };
 after(() => temps.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
-function runFetch(scriptPath, args) {
-  return spawnSync(
-    process.execPath,
-    ['--import', stub, scriptPath, URL_ARG, '--token=test', '--images=false', ...args],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, FIGMA_TOKEN: '', FIGMA_PAGE_URL: '' },
-    },
-  );
+function runFetch(scriptPath, args, url = URL_ARG) {
+  return spawnSync(process.execPath, ['--import', stub, scriptPath, url, '--token=test', '--images=false', ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, FIGMA_TOKEN: '', FIGMA_PAGE_URL: '' },
+  });
 }
+
+test('branch snapshots preserve root and reply identity alongside display fields', () => {
+  const out = tempDir();
+  const result = runFetch(script, [`--out=${out}`], 'https://www.figma.com/design/KEY/branch/BRANCH/file?node-id=1-1');
+  assert.equal(result.status, 0, result.stderr);
+  const rows = JSON.parse(readFileSync(join(out, 'checkout-design-critique', 'checkout-figma-comments.json'), 'utf8'));
+  assert.deepEqual(rows[0], {
+    file_key: 'BRANCH',
+    id: 'c1',
+    parent_id: null,
+    has_done_reaction: true,
+    frame: '1. Frame A',
+    comment_thread: '1',
+    user: 'ada',
+    message: 'Make this bigger',
+    reactions: ':white_check_mark: (grace)',
+    link: 'https://www.figma.com/file/BRANCH?node-id=2%3A2#c1',
+    created_at: '2026-01-01T00:00:00Z',
+    resolved_at: null,
+  });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].file_key, 'BRANCH');
+  assert.equal(rows[1].id, 'c2');
+  assert.equal(rows[1].parent_id, 'c1');
+  assert.equal(rows[1].comment_thread, rows[0].comment_thread);
+  assert.equal(rows[1].has_done_reaction, false);
+});
 
 test('default: run folder is created next to the script', () => {
   const dir = tempDir();

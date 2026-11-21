@@ -5,7 +5,7 @@ Pulls the comments on one Figma page and turns them into a markdown design criti
 1. `_1-fetch-figma-comments.mjs` downloads the page's comments to JSON and exports the commented frames as PNGs.
 2. `_2-generate-design-critique.mjs` builds a markdown critique from that JSON and the PNGs.
 
-The app runs these same two scripts for you.
+The app runs these same two scripts for you and uses a separate internal worker when you explicitly push queued replies or done marks.
 
 ## Desktop app
 
@@ -22,16 +22,14 @@ The app runs these same two scripts for you.
 2. Download the installer from the project's Releases page:
    - macOS, Apple Silicon (M1 and later): the `aarch64` `.dmg`. Open it and drag **Design Steering** into Applications.
    - macOS, Intel: the `x64` `.dmg`.
-   - Windows: the `-setup.exe`. Run it. It installs the Microsoft WebView2 runtime if your PC lacks it. The Windows installer is built and checked automatically, but has not yet been tested on a Windows PC.
+   - Windows: the `-setup.exe`. Run it. It installs the Microsoft WebView2 runtime if your PC lacks it.
 
-3. Open the app the first time. The builds are not signed with an Apple or Microsoft developer certificate, so your system warns about them once:
-   - **macOS:** opening the app shows "Design Steering Not Opened" because Apple could not verify it. Click **Done**, open **System Settings > Privacy & Security**, scroll to **Security**, click **Open Anyway** next to Design Steering, and confirm with your password or Touch ID. Or remove the quarantine flag in a terminal and open the app normally:
+3. Open the app the first time. The builds are not signed, so your system warns about them once:
+   - **macOS:** if Gatekeeper blocks the app, right-click (or Control-click) **Design Steering** in Applications, choose **Open**, then choose **Open** again. Or remove the quarantine flag in a terminal and open the app normally:
 
      ```sh
      xattr -dr com.apple.quarantine "/Applications/Design Steering.app"
      ```
-
-     Version 0.1.0 is reported as "damaged and can't be opened" instead. Use the command above for it, or install a later version.
 
    - **Windows:** if SmartScreen shows "Windows protected your PC", click **More info**, then **Run anyway**.
 
@@ -39,92 +37,66 @@ The app runs these same two scripts for you.
 
 1. Open **Settings** and fill in:
 
-   | Field                       | Meaning                                                                                        |
-   | --------------------------- | ---------------------------------------------------------------------------------------------- |
-   | Figma Personal Access Token | A token with the `file_content:read` and `file_comments:read` scopes (see Requirements below)  |
-   | Include frame images        | On by default. Off skips the PNGs, and every comment is listed under "General comments"        |
-   | Show comment author         | Off by default. On adds each comment's author in parentheses                                   |
-   | Node path                   | Optional. Leave empty to find Node automatically; set it to force a specific `node` executable |
+   | Field                       | Meaning                                                                                                                      |
+   | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+   | Figma Personal Access Token | A token with `file_content:read` and `file_comments:read`; pushing also needs `file_comments:write` (see Requirements below) |
+   | Include frame images        | On by default. Off skips the PNGs, and every comment is listed under "General comments"                                      |
+   | Show comment author         | Off by default. On adds each comment's author in parentheses                                                                 |
+   | Node path                   | Optional. Leave empty to find Node automatically; set it to force a specific `node` executable                               |
 
-   Click **Save**. The token is stored as plain text in the app's settings file. **Clear token** removes it.
-
-   The bottom of Settings shows the installed app's version, for example "Version 0.1.0". Include it when you report a bug.
+   Click **Save**. The token is stored as plain text in the app's settings file. **Clear token**, followed by **Save**, removes it.
 
 2. Open **Comments**, enter the **Figma Page URL** (the link to the Figma page, or to a top-level frame on it) and an optional **Run name** (names the run folder instead of using the Figma page name), then click **Get comments**. The URL is remembered and pre-fills next time. Progress shows while it runs. If the run fails, its error message replaces the live output; otherwise, the critique appears with these actions:
-   - **Sync comments** fetches the same page again as a new run, using the page the displayed run came from (also for runs opened from History).
-   - **Download markdown** copies the whole run folder (markdown, JSON, images and `source.json`) to a folder you choose.
+   - **Sync comments** fetches the same page again as a new run, using the page the displayed run came from (also for runs opened from History). It never posts changes or copies the earlier run's queue. It is shown while the critique is locked or there are no updates ready to send.
+   - **Unlock critique** enables inline reply and done controls. **Lock critique** returns to the read-only preview without sending pending work.
+   - **Save 1 update** or **Save N updates** replaces Sync while unlocked with updates ready to review. Only **Send to Figma** in that review posts them.
+   - **Download markdown** copies the fetched markdown, comments JSON, frame images, title and source record to a folder you choose. It excludes local drafts, delivery results and temporary outbox files.
    - **New page** shows the form again to fetch a different page. **Back to Comments** returns to the critique you were reading.
    - **Two-column layout** (the columns icon) toggles between the default single column and a 60/40 image/comments grid. Comments sit at inline-start (left in left-to-right languages) and images at inline-end, so right-to-left reading mirrors the columns. While you scroll past a tall image, its comments stay pinned at the top until the image ends. The grid stacks when the critique content area is 1024px wide or narrower. Your selection is remembered across runs and app restarts, including while stacked; headings and General comments remain full-width. This changes only the preview, not the saved markdown or downloads.
 3. **History** lists past runs, newest first. Type in the search box to filter by date or name, and select a run to open it.
-4. To remove runs, use **Remove** on a History entry, or **Remove all**. Each asks for confirmation. Removing deletes the run's whole folder (comments, images, markdown and `source.json`) from the app's data folder and keeps no copy. **Remove all** also forgets the remembered page URL. Copies you downloaded to other folders are not removed.
+4. To remove runs, use **Remove** on a History entry, or **Remove all**. Each asks for confirmation. Removing deletes the run's whole folder, including its private outbox, from the app's data folder and keeps no copy. It does not change anything in Figma. **Remove all** also forgets the remembered page URL. Copies you downloaded to other folders are not removed.
 
 Runs are stored in the app's data folder, in a `runs` folder: `~/Library/Application Support/com.designsteering.desktop/runs` on macOS and `%APPDATA%\com.designsteering.desktop\runs` on Windows. Each run folder also holds a `source.json` with the page URL and run name used (never the token), which is how Sync knows what to fetch, and a `title.txt` used as the critique's heading.
 
+### Reply to feedback
+
+1. A critique opens locked. Select **Unlock critique**, then choose **Reply** beside a thread and type in the field below it, or check that thread's done checkbox. Posted comments and replies remain read-only. A check mark on the root from anyone counts as done; it is separate from Figma's `[Resolved]` status. A mark already present in Figma cannot be removed here.
+2. Nonblank replies and pending done marks are saved locally in the run's private outbox. Edit a draft in place, use **Discard reply**, or uncheck an unsent done mark to remove it. Switching layouts or locking preserves the work without contacting Figma; reopen the run from **History** to continue. If a local save fails, the text stays in the editor and can be retried. Older runs without valid thread metadata remain readable and downloadable, but need a fresh fetch before actions can be queued. If saved Markdown cannot be safely matched to a snapshot thread, its original content stays read-only and that validated thread's actions appear separately.
+3. While unlocked, choose **Save 1 update** or **Save N updates**. Each reply and done mark counts as one update. Review the destination and exact actions, then select **Send to Figma** or **Cancel**. The saved token's account is used. Pushing requires `file_comments:write` and access to the file; read-only tokens still work for fetching and Sync. A 403 can mean a token, scope, or file-access problem; use **Open Settings** to check the token.
+4. Results appear beneath their threads and distinguish **Sent**, **Rejected**, **Already done in Figma**, and **Needs verification in Figma**. Confirmed actions are not resent. For an uncertain action, unlock the critique and use **Open in Figma** to check it, then **Retry after checking** and **I checked Figma; retry** only if it was not sent. Retrying an action that did reach Figma can create a duplicate.
+
+Pushing does not edit the saved critique or refresh it. Lock the critique and use **Sync comments** to fetch a new snapshot; unfinished actions remain on the earlier run in History. Download the new run to share the latest Figma state. Use **Download markdown**, rather than copying the app's run folder, to exclude the private outbox.
+
 ### Build from source
 
-Development needs Node 22.12 or later (the build tools require it; the app and the scripts still run on Node 22.9) and the [Rust toolchain](https://www.rust-lang.org/tools/install) (Tauri prerequisites: see [tauri.app](https://tauri.app/start/prerequisites/)).
+Needs Node 22.9 or later and Rust 1.89 or later from the [Rust toolchain](https://www.rust-lang.org/tools/install) (Tauri prerequisites: see [tauri.app](https://tauri.app/start/prerequisites/)).
 
 ```sh
-npm install                # install dependencies and the pre-commit hook
+npm install
 npm run tauri dev          # run the app with hot reload (uses the scripts in this folder)
 npm run stage              # copy the scripts and production dependencies into src-tauri/resources/scripts
 npm run tauri build        # build an installer for this machine (run npm run stage first)
 npm test                   # script tests, app tests and Rust tests
-npm run format             # format the code (Prettier and rustfmt)
-npm run lint               # lint JavaScript and Svelte (ESLint)
-npm run check              # check the Svelte components (svelte-check, warnings fail)
-npm run lint:rust          # lint the Rust code (clippy, warnings fail)
 ```
 
-`npm run stage` accepts a target, for example `node scripts/stage-scripts.mjs darwin-x64`, to bundle the image library for another platform. Installers for releases are built by GitHub Actions; see [Pull requests and releases](#pull-requests-and-releases).
+`npm run stage` accepts a target, for example `node scripts/stage-scripts.mjs darwin-x64`, to bundle the image library for another platform. Pushing a tag that starts with `v` runs the release workflow, which builds the two macOS installers and the Windows installer and attaches them to a draft GitHub release.
 
 The desktop icon uses the bull from [ui-design/logo.svg](ui-design/logo.svg) on a padded white rounded-square tile. Its source is [src-tauri/app-icon.svg](src-tauri/app-icon.svg); regenerate [src-tauri/icons/](src-tauri/icons/) with `npm run tauri -- icon src-tauri/app-icon.svg`. Keep the desktop assets only; the generated `android/` and `ios/` icon folders are not used.
 
 ## Contributing
 
-Development needs Node 22.12 or later and the Rust toolchain (see [Build from source](#build-from-source)).
-
-| Goal                                    | Command                                              |
-| --------------------------------------- | ---------------------------------------------------- |
-| Validate one spec                       | `openspec validate <spec-name> --type spec --strict` |
-| Validate all specs                      | `openspec validate --specs --strict`                 |
-| Run the test suite                      | `npm test`                                           |
-| Format all files                        | `npm run format`                                     |
-| Check formatting without changing files | `npm run format:check`                               |
-| Lint JavaScript and Svelte              | `npm run lint`                                       |
-| Check the Svelte components             | `npm run check`                                      |
-| Lint the Rust code                      | `npm run lint:rust`                                  |
+| Goal               | Command                                              |
+| ------------------ | ---------------------------------------------------- |
+| Validate one spec  | `openspec validate <spec-name> --type spec --strict` |
+| Validate all specs | `openspec validate --specs --strict`                 |
+| Run the test suite | `npm test`                                           |
 
 OpenSpec validation checks specification structure and formatting; it does not verify that the application implements the spec. Tests check application behavior, but do not validate spec formatting. Run validation when editing specs, tests when changing code, and both when changing both. Add `--no-interactive` when running OpenSpec validation in scripts or CI.
-
-`npm install` also installs a pre-commit hook. When you commit, it fixes and formats only the files you staged: ESLint and Prettier for JavaScript and Svelte, Prettier for CSS, JSON, Markdown, YAML and HTML, and rustfmt for Rust. The commit then contains the fixed files. If ESLint finds a problem it cannot fix, such as an undefined variable, the commit stops and shows the error. Files you have not staged are left alone. The hook does not run the tests or clippy, so run `npm test` and `npm run lint:rust` before pushing.
-
-### Pull requests and releases
-
-Changes reach `main` only through pull requests, which are squash-merged. The pull request title becomes the commit message on `main`, decides the next version and is the line in the changelog, so it must follow the [Conventional Commits](https://www.conventionalcommits.org/) format `type(scope): summary`:
-
-- **type:** `feat`, `fix`, `perf` or `revert` for changes users notice; these appear in the changelog. `docs`, `style`, `refactor`, `test`, `build`, `ci` and `chore` do not appear and do not cause a release.
-- **scope** (optional): `runner`, `viewer`, `settings`, `packaging`, `release`, `deps` or `ci`.
-- **`!`** before the colon marks a breaking change, for example `feat(runner)!: new run folder format`. Use `!` rather than a `BREAKING CHANGE:` footer, which the squash merge drops.
-
-Write the summary for users of the app: `fix(runner): find Node installed with fnm`, not `fix: update node.rs`. A `fix` or `perf` bumps the patch version, a `feat` the minor version, and a breaking change the major version (the minor version before 1.0).
-
-Each pull request must pass three checks from the **CI** workflow before it can be merged:
-
-- **PR title** checks the title format.
-- **Checks** runs `format:check`, `lint`, `check`, the script and app tests, `check:config` and `check:version`.
-- **Windows installer** runs clippy and the Rust tests on Windows and builds the `-setup.exe`. The installer can be downloaded from the run's artifacts for 7 days.
-
-The **Release** workflow keeps one release pull request open, titled `chore(release): release X.Y.Z`. It collects the `feat`, `fix`, `perf` and `revert` changes merged since the last release, sets the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and adds the `CHANGELOG.md` entry. Merging it creates the tag `vX.Y.Z` and a draft release, builds the two macOS installers and the Windows installer, attaches them, and publishes the release only when all three are attached.
-
-Just before merging the release pull request, after the last change for that release has merged, reword its `CHANGELOG.md` entry on the release branch and its description to match: the description becomes the release notes. Edit only at that point, because the release pull request is rewritten whenever another releasable change merges.
-
-Pull requests do not build the macOS installers. To build them for a branch, open the repository's **Actions** tab, choose **Build installers**, click **Run workflow**, and pick the branch and `macos` (or `all`). The installers are attached to that run as artifacts for 7 days.
 
 ## Requirements
 
 - Node.js 22.9 or later (uses the built-in `--env-file-if-exists` and `fetch`).
-- A Figma personal access token (PAT) with the `file_content:read` and `file_comments:read` scopes. Create one in Figma under Settings > Security > Personal access tokens.
+- A Figma personal access token (PAT) with the `file_content:read` and `file_comments:read` scopes. Desktop pushes additionally need `file_comments:write` and file access for the saved token's account. Create a token in Figma under Settings > Security > Personal access tokens.
 
 The scripts have one runtime dependency, [`sharp`](https://sharp.pixelplumbing.com/), used to draw the pin circles on the frame images. Run `npm install` once after cloning.
 
@@ -168,10 +140,10 @@ Pass options after `--`:
 Each `fetch` creates a run folder next to the scripts, named after the Figma page. If that folder already exists, the new run goes to `<name>-design-critique-1/` (then `-2`, and so on) instead of overwriting it, and its JSON becomes `<page-name>-figma-comments-1.json`. The folder is self-contained and can be moved or shared on its own:
 
 - `<page-name>-design-critique/`
-  - `<page-name>-figma-comments.json`: the source of truth. One entry per comment with `frame`, `comment_thread`, `user`, `message`, `reactions`, `link`, `created_at` and `resolved_at`.
+  - `<page-name>-figma-comments.json`: one entry per comment with `frame`, `comment_thread`, `user`, `message`, `reactions`, `link`, `created_at`, and `resolved_at`. New snapshots also record `file_key` (the file or branch key), `id`, `parent_id` (`null` for a root comment), and `has_done_reaction` (whether that comment has a check-mark reaction).
   - `title.txt`: the critique's heading. It is the run name exactly as given with `--name` (or in the app), otherwise the Figma page name. Folders without it get the heading "Design critique".
   - `_frames/<n>-<slug>.png`: one image per commented frame, exported at 2x. Each comment thread is marked with a blue circle containing its pin number, centred on the comment's position.
-  - `<run folder name>.md`: the critique, added by `generate`. Each frame image is followed by its comments, prefixed with the pin number shown in Figma. Resolved comments are marked `[Resolved]`. Running `generate` again (for example with `--user=true`) overwrites it.
+  - `<run folder name>.md`: the critique, added by `generate`. Each thread in a new snapshot has one checklist item, with the pin number linked to the root comment and replies nested below it. A check-mark reaction on the root checks the item; Figma's separate `[Resolved]` label is preserved. Running `generate` again (for example with `--user=true`) overwrites it.
 
 ## How it works and limits
 
@@ -186,14 +158,10 @@ Each `fetch` creates a run folder next to the scripts, named after the Figma pag
 ## Troubleshooting
 
 - `Missing Figma PAT` / `Missing page URL`: set them in `.env` or pass them as options.
-- `403`: the token is invalid, expired or missing a scope.
+- `403`: check whether the token is invalid, expired, missing a scope, or belongs to an account without file access.
 - `404`: the file key is wrong or the token's account cannot open the file.
 - `node-id ... is not a page or a top-level frame`: use the page's own link. The error lists the pages it found.
 - `No *-design-critique/ run folder`: run `npm run fetch` first.
 - A run without `_frames/` (fetched with `--images=false`) is fine: every comment is listed under "General comments".
-- Rate limited (`429`): the script waits and retries once. Re-run later if it still fails.
+- Rate limited (`429`): fetch waits and retries once. A push stops without automatically retrying; review and push the remaining actions later.
 - In the app, "Node 22.9 or later is required": install a current Node, then use **Detect** in Settings or restart the app. If Node is installed somewhere unusual, put its full path in the Node path field.
-
-## License
-
-Design Steering is MIT licensed. See [LICENSE](LICENSE).

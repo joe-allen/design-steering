@@ -130,7 +130,6 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Directories like `v22.9.0` under `base`, newest first, each joined with `relative`.
-#[cfg(not(windows))]
 fn version_dirs(base: &Path, relative: &str) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(base) else {
         return Vec::new();

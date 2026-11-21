@@ -10,6 +10,14 @@ vi.mock('./api.js', () => ({
   startRun: vi.fn(),
   listRuns: vi.fn(),
   readRun: vi.fn(),
+  readThreads: vi.fn(),
+  readOutbox: vi.fn(),
+  queueReply: vi.fn(),
+  queueDone: vi.fn(),
+  editReply: vi.fn(),
+  discardAction: vi.fn(),
+  retryUncertain: vi.fn(),
+  pushRun: vi.fn(),
   copyRun: vi.fn(),
   deleteRun: vi.fn(),
   deleteAllRuns: vi.fn(),
@@ -28,6 +36,12 @@ const {
   removeRun,
   removeAllRuns,
   toggleCritiqueLayout,
+  unlockCritique,
+  lockCritique,
+  openReplyEditor,
+  updateDraft,
+  reviewPush,
+  confirmPush,
 } = await import('./session.svelte.js');
 
 const PAGE_A = 'https://www.figma.com/design/A/file?node-id=1-1';
@@ -54,6 +68,15 @@ beforeEach(() => {
     critiqueLayout: 'single',
     critiqueLayoutReady: false,
     critiqueLayoutSaving: false,
+    threadInfo: null,
+    outbox: null,
+    actionsError: null,
+    actionsLoading: false,
+    queueBusy: false,
+    review: null,
+    unlocked: false,
+    replyDrafts: [],
+    transitionBusy: false,
   });
 });
 
@@ -288,6 +311,142 @@ describe('removing runs', () => {
     expect(await removeRun('a-design-critique')).toBeNull();
     expect(session.run).toBeNull();
     expect(api.deleteRun).toHaveBeenCalledWith('b-design-critique');
+  });
+
+  describe('run-scoped outbox', () => {
+    const info = {
+      destination: PAGE_A,
+      fileKey: 'A',
+      threads: [{ rootId: 'root', frame: 'Home', pin: '1', message: 'Feedback', user: 'ada', done: false }],
+    };
+    const pending = {
+      version: 1,
+      revision: 1,
+      actions: [{ id: 'action-1', rootId: 'root', kind: 'reply', status: 'pending', text: 'Keep this draft' }],
+    };
+
+    test('sync creates a fresh run without copying actions; reopening History restores the earlier outbox', async () => {
+      const oldId = 'home-design-critique';
+      const newId = 'home-design-critique-1';
+      const source = { pageUrl: PAGE_A, runName: 'home' };
+      const boxes = { [oldId]: pending, [newId]: { version: 1, revision: 0, actions: [] } };
+      api.readRun.mockImplementation(async (id) => runFor(id, source));
+      api.readThreads.mockResolvedValue(info);
+      api.readOutbox.mockImplementation(async (id) => structuredClone(boxes[id]));
+      api.startRun.mockResolvedValue(newId);
+
+      await openRun(oldId);
+      expect(session.outbox.actions[0].text).toBe('Keep this draft');
+      await syncRun();
+      expect(session.run.id).toBe(newId);
+      expect(session.outbox.actions).toEqual([]);
+      expect(boxes[oldId]).toEqual(pending);
+      expect(api.pushRun).not.toHaveBeenCalled();
+
+      session.screen = 'history';
+      await openRun(oldId);
+      expect(session.run.id).toBe(oldId);
+      expect(session.outbox.actions[0].text).toBe('Keep this draft');
+    });
+
+    test('an inline draft survives relock, sync, and reopening the original run', async () => {
+      const oldId = 'home-design-critique';
+      const newId = 'home-design-critique-1';
+      const source = { pageUrl: PAGE_A, runName: 'home' };
+      const boxes = {
+        [oldId]: { version: 1, revision: 0, actions: [] },
+        [newId]: { version: 1, revision: 0, actions: [] },
+      };
+      api.readRun.mockImplementation(async (id) => runFor(id, source));
+      api.readThreads.mockResolvedValue(info);
+      api.readOutbox.mockImplementation(async (id) => structuredClone(boxes[id]));
+      api.queueReply.mockImplementation(async (id, revision, rootId, text) => {
+        expect(revision).toBe(boxes[id].revision);
+        boxes[id] = {
+          version: 1,
+          revision: revision + 1,
+          actions: [{ id: 'action-1', rootId, kind: 'reply', status: 'pending', text }],
+        };
+        return structuredClone(boxes[id]);
+      });
+      api.startRun.mockResolvedValue(newId);
+
+      await openRun(oldId);
+      unlockCritique();
+      openReplyEditor('root');
+      updateDraft(session.replyDrafts[0].key, 'Saved on the earlier run');
+      await lockCritique();
+      expect(session.unlocked).toBe(false);
+      expect(boxes[oldId].actions[0].text).toBe('Saved on the earlier run');
+      await syncRun();
+      expect(session.run.id).toBe(newId);
+      expect(session.outbox.actions).toEqual([]);
+      await openRun(oldId);
+      expect(session.unlocked).toBe(false);
+      expect(session.replyDrafts[0].text).toBe('Saved on the earlier run');
+      expect(api.pushRun).not.toHaveBeenCalled();
+    });
+
+    test('a partial access failure keeps confirmed and unsent results on the original run', async () => {
+      const id = 'home-design-critique';
+      const initial = {
+        version: 1,
+        revision: 2,
+        actions: [
+          { id: 'action-1', rootId: 'root', kind: 'reply', status: 'pending', text: 'First' },
+          { id: 'action-2', rootId: 'root', kind: 'reply', status: 'pending', text: 'Second' },
+        ],
+      };
+      const partial = {
+        version: 1,
+        revision: 6,
+        actions: [
+          { ...initial.actions[0], status: 'confirmed' },
+          { ...initial.actions[1], status: 'rejected', error: 'Figma returned 403.' },
+        ],
+      };
+      api.readRun.mockResolvedValue(runFor(id, { pageUrl: PAGE_A, runName: 'home' }));
+      api.readThreads.mockResolvedValue(info);
+      api.readOutbox.mockResolvedValueOnce(initial).mockResolvedValueOnce(partial);
+      api.pushRun.mockRejectedValue('Figma returned 403. Check the saved token and file access in Settings.');
+
+      await openRun(id);
+      session.unlocked = true;
+      await reviewPush();
+      await confirmPush();
+
+      expect(api.pushRun).toHaveBeenCalledWith(id, 2, { token: 'figd_secret', nodePath: '' }, expect.any(Function));
+      expect(session.error).toContain('403');
+      expect(session.errorNeedsSettings).toBe(true);
+      expect(session.outbox.actions.map((action) => action.status)).toEqual(['confirmed', 'rejected']);
+      expect(session.run.id).toBe(id);
+      expect(api.startRun).not.toHaveBeenCalled();
+    });
+
+    test('a read-only token can still sync after a refused push without moving the pending queue', async () => {
+      const oldId = 'home-design-critique';
+      const newId = 'home-design-critique-1';
+      const source = { pageUrl: PAGE_A, runName: 'home' };
+      const boxes = { [oldId]: pending, [newId]: { version: 1, revision: 0, actions: [] } };
+      api.readRun.mockImplementation(async (id) => runFor(id, source));
+      api.readThreads.mockResolvedValue(info);
+      api.readOutbox.mockImplementation(async (id) => structuredClone(boxes[id]));
+      api.pushRun.mockRejectedValue('Figma returned 403. Check the token scope and file access in Settings.');
+      api.startRun.mockResolvedValue(newId);
+
+      await openRun(oldId);
+      session.unlocked = true;
+      await reviewPush();
+      await confirmPush();
+      expect(session.outbox.actions[0].status).toBe('pending');
+      expect(api.startRun).not.toHaveBeenCalled();
+      await syncRun();
+
+      expect(api.startRun.mock.calls[0][0].token).toBe('figd_secret');
+      expect(session.run.id).toBe(newId);
+      expect(session.outbox.actions).toEqual([]);
+      expect(boxes[oldId]).toEqual(pending);
+    });
   });
 
   test('a failed removal returns the error and keeps the displayed run', async () => {

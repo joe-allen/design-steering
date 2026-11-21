@@ -1,17 +1,11 @@
 <script>
-  import { appVersion, detectNode } from '../lib/api.js';
+  import { detectNode } from '../lib/api.js';
   import { DEFAULT_SETTINGS, loadSettings, saveSettings } from '../lib/settings.js';
 
   let settings = $state({ ...DEFAULT_SETTINGS });
   let loaded = $state(false);
   let status = $state(null);
   let nodeStatus = $state(null);
-  let version = $state(null);
-
-  appVersion().then(
-    (value) => (version = value),
-    () => {},
-  );
 
   loadSettings().then(
     (value) => {
@@ -97,10 +91,6 @@
           {/if}
           <button type="submit" class="action">Save</button>
         </div>
-
-        {#if version}
-          <p class="note version">Version {version}</p>
-        {/if}
       </form>
     {/if}
   </div>
@@ -156,10 +146,6 @@
 
   .note.error {
     color: var(--danger);
-  }
-
-  .version {
-    margin: 0;
   }
 
   .footer {

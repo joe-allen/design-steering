@@ -55,6 +55,25 @@ function makeRun(parent, name, { frames = false, message = 'Make this bigger', a
 
 const run = (scriptPath, args) => spawnSync(process.execPath, [scriptPath, ...args], { encoding: 'utf8' });
 
+test('new snapshots render one linked checkbox per thread with nested replies', () => {
+  const dir = makeRun(tempDir(), 'home-design-critique');
+  const link = 'https://www.figma.com/file/KEY?node-id=2%3A2#c1';
+  writeFileSync(
+    join(dir, 'home-figma-comments.json'),
+    JSON.stringify([
+      { ...comment('Addressed'), id: 'c1', parent_id: null, link, has_done_reaction: true },
+      { ...comment('Thanks\nLooks good'), id: 'c2', parent_id: 'c1', user: 'grace' },
+      { ...comment('Resolved separately'), id: 'c3', parent_id: null, comment_thread: '2', resolved_at: '2026-01-02' },
+    ]),
+  );
+  const result = run(script, [dir, '--user=true']);
+  assert.equal(result.status, 0, result.stderr);
+  const md = readFileSync(join(dir, 'home-design-critique.md'), 'utf8');
+  assert.ok(md.includes(`- [x] **[1](${link})**: Addressed (ada)\n  - Thanks\n    Looks good (grace)`));
+  assert.match(md, /^- \[ \] \*\*2\*\*: Resolved separately \(ada\) \[Resolved\]$/m);
+  assert.equal((md.match(/^\s*- \[[ x]\]/gm) ?? []).length, 2);
+});
+
 test('--out: finds the newest run folder in the given folder', () => {
   const out = tempDir();
   makeRun(out, 'old-design-critique', { message: 'old comment', ageSeconds: 60 });

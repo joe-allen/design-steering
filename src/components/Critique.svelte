@@ -1,17 +1,55 @@
 <script>
   import { openUrl } from '@tauri-apps/plugin-opener';
-  import { handleCritiqueClick, renderCritique } from '../lib/render.js';
+  import { handleCritiqueClick, prepareThreadCritique, renderCritique } from '../lib/render.js';
+  import ThreadActions from './ThreadActions.svelte';
 
-  let { markdown, runDir, layout = 'single' } = $props();
+  let { markdown, runDir, layout = 'single', threadInfo = null, outbox = null } = $props();
 
   const html = $derived(renderCritique(markdown, { runDir }));
+  const structured = $derived(
+    threadInfo && outbox ? prepareThreadCritique(markdown, { runDir }, threadInfo.threads) : null,
+  );
 </script>
 
-<!-- The HTML was sanitized by renderCritique, which also limits images to this run's frames. -->
+{#snippet threadList(list)}
+  <ul {...list.attributes}>
+    {#each list.items as item, index (item.thread?.rootId ?? index)}
+      {#if item.thread}
+        <ThreadActions thread={item.thread} {runDir} showAuthors={structured.showAuthors} />
+      {:else}
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+        {@html item.html}
+      {/if}
+    {/each}
+  </ul>
+{/snippet}
+
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="critique" class:grid={layout === 'grid'} onclick={(event) => handleCritiqueClick(event, openUrl)}>
-  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-  {@html html}
+  {#if structured}
+    {#each structured.blocks as block, index (index)}
+      {#if block.kind === 'frame'}
+        <div class="frame">
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+          {@html block.image}
+          {@render threadList(block.list)}
+        </div>
+      {:else if block.kind === 'list'}
+        {@render threadList(block.list)}
+      {:else if block.kind === 'unmatched'}
+        <p role="status">
+          Some snapshot threads do not match the saved preview. Their actions are shown separately below.
+        </p>
+        {@render threadList(block.list)}
+      {:else}
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+        {@html block.html}
+      {/if}
+    {/each}
+  {:else}
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+    {@html html}
+  {/if}
 </div>
 
 <style>

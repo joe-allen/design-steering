@@ -4,16 +4,14 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { disk } from '../test/fake-store.js';
 
 vi.mock('@tauri-apps/plugin-store', async () => import('../test/fake-store.js'));
-vi.mock('../lib/api.js', () => ({ appVersion: vi.fn(), detectNode: vi.fn() }));
+vi.mock('../lib/api.js', () => ({ detectNode: vi.fn() }));
 
-const { appVersion, detectNode } = await import('../lib/api.js');
+const { detectNode } = await import('../lib/api.js');
 const { default: Settings } = await import('./Settings.svelte');
 
 beforeEach(() => {
   disk.clear();
   vi.mocked(detectNode).mockReset();
-  vi.mocked(appVersion).mockReset();
-  vi.mocked(appVersion).mockResolvedValue('0.1.0');
 });
 
 const renderLoaded = async () => {
@@ -64,18 +62,5 @@ describe('Settings screen', () => {
     vi.mocked(detectNode).mockRejectedValueOnce('Node 22.9 or later is required.');
     await userEvent.click(screen.getByRole('button', { name: 'Detect' }));
     await screen.findByText('Node 22.9 or later is required.');
-  });
-
-  test('shows the running app version', async () => {
-    await renderLoaded();
-    expect(await screen.findByText('Version 0.1.0')).toBeTruthy();
-  });
-
-  test('shows no version line when the version cannot be read', async () => {
-    vi.mocked(appVersion).mockReset();
-    vi.mocked(appVersion).mockRejectedValue(new Error('no app runtime'));
-    await renderLoaded();
-    await vi.mocked(appVersion).mock.results[0].value.catch(() => {});
-    expect(screen.queryByText(/^Version/)).toBeNull();
   });
 });

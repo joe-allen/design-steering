@@ -9,6 +9,14 @@ vi.mock('../lib/api.js', () => ({
   startRun: vi.fn(),
   listRuns: vi.fn(),
   readRun: vi.fn(),
+  readThreads: vi.fn(),
+  readOutbox: vi.fn(),
+  queueReply: vi.fn(),
+  queueDone: vi.fn(),
+  editReply: vi.fn(),
+  discardAction: vi.fn(),
+  retryUncertain: vi.fn(),
+  pushRun: vi.fn(),
   copyRun: vi.fn(),
   deleteRun: vi.fn(),
   deleteAllRuns: vi.fn(),
@@ -46,6 +54,12 @@ beforeEach(() => {
     errorNeedsSettings: false,
     urlError: null,
     notice: null,
+    threadInfo: null,
+    outbox: null,
+    actionsError: null,
+    actionsLoading: false,
+    queueBusy: false,
+    review: null,
   });
 });
 

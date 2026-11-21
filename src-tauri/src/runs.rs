@@ -158,23 +158,54 @@ pub fn delete_all_runs_in(runs_dir: &Path) -> Result<(), String> {
     }
 }
 
-fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+fn is_comments_snapshot(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".json") else {
+        return false;
+    };
+    let Some((prefix, suffix)) = stem.rsplit_once("-figma-comments") else {
+        return false;
+    };
+    !prefix.is_empty()
+        && (suffix.is_empty()
+            || suffix.strip_prefix('-').is_some_and(|number| {
+                !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+            }))
+}
+
+fn copy_snapshot(from: &Path, to: &Path, id: &str) -> io::Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let kind = entry.file_type()?;
-        let target = to.join(entry.file_name());
-        if kind.is_dir() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if kind.is_dir() && name == "_frames" {
+            let target = to.join(name);
             fs::create_dir(&target)?;
-            copy_tree(&entry.path(), &target)?;
-        } else if kind.is_file() {
-            fs::copy(entry.path(), &target)?;
+            for frame in fs::read_dir(entry.path())? {
+                let frame = frame?;
+                let is_png = frame
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+                if frame.file_type()?.is_file() && is_png {
+                    fs::copy(frame.path(), target.join(frame.file_name()))?;
+                }
+            }
+        } else if kind.is_file()
+            && (name == format!("{id}.md")
+                || name == SOURCE_FILE
+                || name == "title.txt"
+                || is_comments_snapshot(name))
+        {
+            fs::copy(entry.path(), to.join(name))?;
         }
     }
     Ok(())
 }
 
-/// Copies the whole run folder into `dest`, using the next free `-<n>` suffix when the name is
-/// taken. An existing folder is never written into.
+/// Copies shareable snapshot files using the next free folder suffix without overwriting.
 pub fn copy_run_to(runs_dir: &Path, id: &str, dest: &Path) -> Result<PathBuf, String> {
     let source = resolve_run(runs_dir, id)?;
     if !dest.is_dir() {
@@ -194,7 +225,7 @@ pub fn copy_run_to(runs_dir: &Path, id: &str, dest: &Path) -> Result<PathBuf, St
             Err(error) => return Err(format!("Could not create {}: {error}", target.display())),
         }
     };
-    if let Err(error) = copy_tree(&source, &target) {
+    if let Err(error) = copy_snapshot(&source, &target, id) {
         let _ = fs::remove_dir_all(&target);
         return Err(format!("Could not copy the run: {error}"));
     }
@@ -309,11 +340,31 @@ mod tests {
         let runs = temp_dir("copy-src");
         let dest = temp_dir("copy-dest");
         make_run(&runs, "home-design-critique", 1, true);
+        let source_dir = runs.join("home-design-critique");
+        fs::write(source_dir.join("title.txt"), "Home").unwrap();
+        write_source(
+            &source_dir,
+            &source("https://www.figma.com/design/KEY/page?node-id=1-1", "home"),
+        )
+        .unwrap();
+        fs::write(
+            source_dir.join("outbox.json"),
+            r#"{"pending":"private","posted":"private"}"#,
+        )
+        .unwrap();
+        fs::write(source_dir.join(".outbox-1.tmp"), "private").unwrap();
+        fs::write(source_dir.join("_frames/private.txt"), "private").unwrap();
 
         let first = copy_run_to(&runs, "home-design-critique", &dest).unwrap();
         assert_eq!(first, dest.join("home-design-critique"));
         assert!(first.join("_frames/1-a.png").is_file());
         assert!(first.join("home-design-critique.md").is_file());
+        assert!(first.join("x-figma-comments.json").is_file());
+        assert_eq!(fs::read_to_string(first.join("title.txt")).unwrap(), "Home");
+        assert!(first.join(SOURCE_FILE).is_file());
+        assert!(!first.join("outbox.json").exists());
+        assert!(!first.join(".outbox-1.tmp").exists());
+        assert!(!first.join("_frames/private.txt").exists());
 
         fs::write(first.join("marker"), b"keep").unwrap();
         let second = copy_run_to(&runs, "home-design-critique", &dest).unwrap();
@@ -407,6 +458,8 @@ mod tests {
             &source("https://secret.figma.test/p", "private"),
         )
         .unwrap();
+        fs::write(runs.join("a-design-critique/outbox.json"), "private").unwrap();
+        fs::write(runs.join("a-design-critique/.outbox-1.tmp"), "private").unwrap();
         let copy = copy_run_to(&runs, "a-design-critique", &downloads).unwrap();
 
         delete_run_in(&runs, "a-design-critique").unwrap();
@@ -473,6 +526,8 @@ mod tests {
         make_run(&runs, "a-design-critique", 1, true);
         make_run(&runs, "b-design-critique-1", 2, true);
         make_run(&runs, "failed-design-critique", 3, false);
+        fs::write(runs.join("a-design-critique/outbox.json"), "private").unwrap();
+        fs::write(runs.join("b-design-critique-1/.outbox-1.tmp"), "private").unwrap();
         fs::create_dir_all(runs.join("notes")).unwrap();
         fs::write(runs.join("stray.txt"), b"x").unwrap();
 

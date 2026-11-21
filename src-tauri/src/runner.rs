@@ -1,4 +1,5 @@
 use crate::node::{self, hide_window};
+use crate::outbox::{self, ActionStatus, AppLock};
 use crate::runs;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read};
@@ -8,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const FETCH_SCRIPT: &str = "_1-fetch-figma-comments.mjs";
 const GENERATE_SCRIPT: &str = "_2-generate-design-critique.mjs";
+const PUSH_SCRIPT: &str = "_3-push-figma-comments.mjs";
 const ERROR_TAIL_LINES: usize = 8;
 
 /// Deliberately not `Debug`, so the token cannot end up in a log by accident.
@@ -46,6 +48,20 @@ pub struct RunPlan {
     pub node: PathBuf,
     pub scripts_dir: PathBuf,
     pub runs_dir: PathBuf,
+}
+
+#[derive(Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PushSettings {
+    pub token: String,
+    pub node_path: String,
+}
+
+pub struct PushPlan {
+    pub node: PathBuf,
+    pub scripts_dir: PathBuf,
+    pub runs_dir: PathBuf,
+    pub app_data: PathBuf,
 }
 
 /// Allows one run at a time; releases on drop.
@@ -242,20 +258,32 @@ pub fn execute_run(
     Ok(id)
 }
 
-pub fn scripts_dir(bundled: &Path) -> Result<PathBuf, String> {
+fn select_scripts_dir(bundled: &Path, development: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(repo) = development {
+        if [FETCH_SCRIPT, GENERATE_SCRIPT, PUSH_SCRIPT]
+            .iter()
+            .all(|script| repo.join(script).is_file())
+        {
+            return dunce::canonicalize(repo).map_err(|error| error.to_string());
+        }
+    }
     let bundled = dunce::simplified(bundled).to_path_buf();
     if bundled.join(FETCH_SCRIPT).is_file() {
         return Ok(bundled);
     }
-    // `tauri dev` runs from the repo, where the scripts and their node_modules already exist.
+    Err("The bundled scripts were not found. Reinstall Design Steering.".into())
+}
+
+pub fn scripts_dir(bundled: &Path) -> Result<PathBuf, String> {
     #[cfg(debug_assertions)]
     {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        if repo.join(FETCH_SCRIPT).is_file() {
-            return dunce::canonicalize(repo).map_err(|error| error.to_string());
-        }
+        select_scripts_dir(bundled, Some(&repo))
     }
-    Err("The bundled scripts were not found. Reinstall Design Steering.".into())
+    #[cfg(not(debug_assertions))]
+    {
+        select_scripts_dir(bundled, None)
+    }
 }
 
 pub fn build_plan(
@@ -274,11 +302,138 @@ pub fn build_plan(
     })
 }
 
+pub fn build_push_plan(
+    settings: &PushSettings,
+    bundled_scripts: &Path,
+    runs_dir: &Path,
+    app_data: &Path,
+) -> Result<PushPlan, String> {
+    if settings.token.trim().is_empty() {
+        return Err("The Figma token is missing. Add it in Settings.".into());
+    }
+    let node = node::detect(Some(settings.node_path.as_str()))?;
+    Ok(PushPlan {
+        node: PathBuf::from(node.path),
+        scripts_dir: scripts_dir(bundled_scripts)?,
+        runs_dir: runs_dir.to_path_buf(),
+        app_data: app_data.to_path_buf(),
+    })
+}
+
+fn redact_push(line: &str, token: &str, replies: &[String]) -> String {
+    let mut result = redact(line, token);
+    for reply in replies {
+        for part in reply.lines().filter(|part| !part.is_empty()) {
+            result = result.replace(part, "***");
+        }
+    }
+    result
+}
+
+pub fn execute_push(
+    plan: &PushPlan,
+    id: &str,
+    reviewed_revision: u64,
+    token: &str,
+    emit: &(dyn Fn(RunEvent) + Send + Sync),
+) -> Result<(), String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("The Figma token is missing. Add it in Settings.".into());
+    }
+    let lock = AppLock::acquire(&plan.app_data)?;
+    let outbox = outbox::read(&plan.runs_dir, id)?;
+    outbox::check_revision(&outbox, reviewed_revision)?;
+    if !outbox.actions.iter().any(|action| {
+        matches!(
+            action.status,
+            ActionStatus::Pending | ActionStatus::Rejected
+        )
+    }) {
+        return Err("There are no reviewed actions ready to push.".into());
+    }
+    let run_dir = outbox::resolve_writable_run(&plan.runs_dir, id)?;
+    let script = plan.scripts_dir.join(PUSH_SCRIPT);
+    if !script.is_file() {
+        return Err("The bundled push script was not found. Reinstall Design Steering.".into());
+    }
+    let replies: Vec<String> = outbox
+        .actions
+        .iter()
+        .filter_map(|action| action.text.clone())
+        .collect();
+    let mut command = Command::new(&plan.node);
+    command
+        .arg(&script)
+        .arg(&run_dir)
+        .arg(reviewed_revision.to_string())
+        .env_remove("FIGMA_TOKEN")
+        .env_remove("FIGMA_PAGE_URL")
+        .env_remove("NODE_OPTIONS")
+        .env("FIGMA_TOKEN", token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(lock.child_handle()?))
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    emit(RunEvent::Step {
+        step: "push".into(),
+    });
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start the push worker: {error}"))?;
+    let control = child.stdin.take().expect("stdin is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let mut reader = BufReader::new(stderr);
+    let mut buffer = Vec::new();
+    let mut lines = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                let raw = String::from_utf8_lossy(&buffer);
+                let line = redact_push(raw.trim_end(), token, &replies);
+                emit(RunEvent::Log { line: line.clone() });
+                lines.push(line);
+            }
+            Err(error) => {
+                drop(control);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Could not read push progress: {error}. Check Figma before retrying an in-flight action."));
+            }
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("Could not wait for the push worker: {error}"))?;
+    drop(control);
+    if status.success() {
+        return Ok(());
+    }
+    let non_empty: Vec<&String> = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let tail: Vec<&str> = non_empty
+        .iter()
+        .skip(non_empty.len().saturating_sub(ERROR_TAIL_LINES))
+        .map(|line| line.as_str())
+        .collect();
+    Err(if tail.is_empty() {
+        format!("The push worker exited with {status}. Check Figma before retrying an in-flight action.")
+    } else {
+        tail.join("\n")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     const TOKEN: &str = "figd_super-secret-token";
 
@@ -377,6 +532,29 @@ console.log('Wrote it');
             .unwrap_err()
             .contains("page URL is missing"));
         assert!(validate(&settings("https://x")).is_ok());
+    }
+
+    #[test]
+    fn development_uses_current_scripts_and_installed_apps_use_bundled_scripts() {
+        let root = temp_dir("script-discovery");
+        let dev = root.join("repo");
+        let bundled = root.join("bundled");
+        fs::create_dir_all(&dev).unwrap();
+        fs::create_dir_all(&bundled).unwrap();
+        for script in [FETCH_SCRIPT, GENERATE_SCRIPT, PUSH_SCRIPT] {
+            fs::write(dev.join(script), "").unwrap();
+            fs::write(bundled.join(script), "").unwrap();
+        }
+        assert_eq!(
+            select_scripts_dir(&bundled, Some(&dev)).unwrap(),
+            dunce::canonicalize(&dev).unwrap()
+        );
+        assert_eq!(select_scripts_dir(&bundled, None).unwrap(), bundled);
+        fs::remove_file(dev.join(PUSH_SCRIPT)).unwrap();
+        assert_eq!(select_scripts_dir(&bundled, Some(&dev)).unwrap(), bundled);
+        fs::remove_file(bundled.join(FETCH_SCRIPT)).unwrap();
+        assert!(select_scripts_dir(&bundled, None).is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -534,6 +712,342 @@ console.log('Wrote it');
             runs::list_runs_in(&plan.runs_dir).is_empty(),
             "failed run must not reach History"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn push_plan(label: &str) -> (PushPlan, PathBuf, String) {
+        let root = temp_dir(label);
+        let app_data = root.join("app-data");
+        let runs_dir = app_data.join("runs");
+        let id = "checkout-design-critique".to_string();
+        let run_dir = runs_dir.join(&id);
+        let scripts_dir = root.join("scripts");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::write(run_dir.join(format!("{id}.md")), "# Critique").unwrap();
+        runs::write_source(
+            &run_dir,
+            &runs::RunSource {
+                page_url: "https://www.figma.com/design/FILE/branch/BRANCH/page?node-id=1-1".into(),
+                run_name: "checkout".into(),
+            },
+        )
+        .unwrap();
+        fs::write(
+            run_dir.join("checkout-figma-comments.json"),
+            serde_json::to_vec(&json!([
+                {"file_key":"BRANCH", "id":"root-1", "parent_id":null,
+                 "has_done_reaction":false, "frame":"Home", "comment_thread":"1",
+                 "message":"Feedback", "user":"ada"},
+                {"file_key":"BRANCH", "id":"root-2", "parent_id":null,
+                 "has_done_reaction":false, "frame":"Home", "comment_thread":"2",
+                 "message":"More feedback", "user":"ada"}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        outbox::queue_reply(&runs_dir, &id, 0, "root-1", "Private reply").unwrap();
+        (
+            PushPlan {
+                node: PathBuf::from("node"),
+                scripts_dir,
+                runs_dir,
+                app_data,
+            },
+            root,
+            id,
+        )
+    }
+
+    fn write_stubbed_worker(plan: &PushPlan, root: &Path, scenario: serde_json::Value) {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let stub = tauri::Url::from_file_path(repo.join("tests/stub-push-figma.mjs"))
+            .unwrap()
+            .to_string();
+        let worker = tauri::Url::from_file_path(repo.join(PUSH_SCRIPT))
+            .unwrap()
+            .to_string();
+        let scenario_path = root.join("scenario.json");
+        let request_path = root.join("requests.jsonl");
+        fs::write(&scenario_path, serde_json::to_vec(&scenario).unwrap()).unwrap();
+        fs::write(&request_path, "").unwrap();
+        let script = format!(
+            "process.env.PUSH_STUB_SCENARIO = {};\n\
+             process.env.PUSH_STUB_REQUESTS = {};\n\
+             await import({});\n\
+             await import({});\n",
+            serde_json::to_string(&scenario_path.to_string_lossy()).unwrap(),
+            serde_json::to_string(&request_path.to_string_lossy()).unwrap(),
+            serde_json::to_string(&stub).unwrap(),
+            serde_json::to_string(&worker).unwrap(),
+        );
+        fs::write(plan.scripts_dir.join(PUSH_SCRIPT), script).unwrap();
+    }
+
+    #[test]
+    fn push_uses_environment_only_and_redacts_token_and_reply_output() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let (plan, root, id) = push_plan("push-redaction");
+        fs::write(
+            plan.scripts_dir.join(PUSH_SCRIPT),
+            r#"
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const reply = JSON.parse(readFileSync(join(process.argv[2], 'outbox.json'))).actions[0].text;
+if (!process.env.FIGMA_TOKEN || process.argv.join(' ').includes(process.env.FIGMA_TOKEN)
+    || process.argv.join(' ').includes(reply)) process.exit(2);
+console.error('token=' + process.env.FIGMA_TOKEN);
+console.error('reply=' + reply);
+process.exit(1);
+"#,
+        )
+        .unwrap();
+        let events = Mutex::new(Vec::new());
+        let error = execute_push(&plan, &id, 1, TOKEN, &|event| {
+            events.lock().unwrap().push(event);
+        })
+        .unwrap_err();
+        let logs = serde_json::to_string(&events.into_inner().unwrap()).unwrap();
+        assert!(error.contains("***"));
+        assert!(!error.contains(TOKEN) && !error.contains("Private reply"));
+        assert!(!logs.contains(TOKEN) && !logs.contains("Private reply"));
+        assert_eq!(fs::read(plan.app_data.join("outbox.lock")).unwrap(), b"");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn push_parent_process() {
+        let Ok(root) = std::env::var("DESIGN_STEERING_TEST_PUSH_PARENT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let plan = PushPlan {
+            node: PathBuf::from("node"),
+            scripts_dir: root.join("scripts"),
+            runs_dir: root.join("app-data/runs"),
+            app_data: root.join("app-data"),
+        };
+        execute_push(&plan, "checkout-design-critique", 2, TOKEN, &|_| {}).unwrap();
+    }
+
+    #[test]
+    fn competing_push_and_parent_exit_keep_the_inflight_reply_protected() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let (plan, root, id) = push_plan("push-parent");
+        outbox::queue_reply(&plan.runs_dir, &id, 1, "root-2", "Later reply").unwrap();
+        write_stubbed_worker(
+            &plan,
+            &root,
+            json!({
+                "comments": [
+                    {"id":"root-1", "parent_id":null, "reactions":[]},
+                    {"id":"root-2", "parent_id":null, "reactions":[]}
+                ],
+                "posts": [{"hang":true, "abortDelayMs":1500}]
+            }),
+        );
+        let mut parent = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runner::tests::push_parent_process",
+                "--nocapture",
+            ])
+            .env("DESIGN_STEERING_TEST_PUSH_PARENT", &root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let requests = root.join("requests.jsonl");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let recorded = fs::read_to_string(&requests).unwrap();
+            if recorded.contains("\"method\":\"POST\"") {
+                break;
+            }
+            assert!(
+                parent.try_wait().unwrap().is_none(),
+                "push parent exited early"
+            );
+            assert!(Instant::now() < deadline, "push did not dispatch");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let error = execute_push(&plan, &id, 2, TOKEN, &|_| {}).unwrap_err();
+        assert!(error.contains("Another"), "{error}");
+        parent.kill().unwrap();
+        parent.wait().unwrap();
+        assert!(
+            AppLock::acquire(&plan.app_data).is_err(),
+            "the worker must retain the lock after its parent exits"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(lock) = AppLock::acquire(&plan.app_data) {
+                drop(lock);
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker did not release its lock");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let saved = outbox::read(&plan.runs_dir, &id).unwrap();
+        assert!(matches!(
+            saved.actions[0].status,
+            ActionStatus::InFlight | ActionStatus::Uncertain
+        ));
+        assert_eq!(saved.actions[1].status, ActionStatus::Pending);
+        assert!(outbox::retry_uncertain(
+            &plan.runs_dir,
+            &id,
+            saved.revision,
+            &saved.actions[0].id,
+            false
+        )
+        .is_err());
+        assert_eq!(
+            fs::read_to_string(&requests)
+                .unwrap()
+                .matches("\"method\":\"POST\"")
+                .count(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stubbed_fetch_queue_push_sync_download_and_removal_stay_run_local() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let root = temp_dir("full-stub-flow");
+        let app_data = root.join("app-data");
+        let runs_dir = app_data.join("runs");
+        let scripts_dir = root.join("scripts");
+        fs::create_dir_all(&runs_dir).unwrap();
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let url = |path: &Path| tauri::Url::from_file_path(path).unwrap().to_string();
+        let fetch_stub = url(&repo.join("tests/stub-figma.mjs"));
+        let fetch_script = url(&repo.join(FETCH_SCRIPT));
+        let generate_script = url(&repo.join(GENERATE_SCRIPT));
+        let fetch_log = root.join("fetch-requests.jsonl");
+        let wrapper = format!(
+            "import {{ appendFileSync }} from 'node:fs';\n\
+             await import({});\n\
+             const offlineFetch = globalThis.fetch;\n\
+             globalThis.fetch = (input, options = {{}}) => {{\n\
+               appendFileSync({}, JSON.stringify({{url: String(input), method: options.method ?? 'GET'}}) + '\\n');\n\
+               return offlineFetch(input, options);\n\
+             }};\n\
+             await import({});\n",
+            serde_json::to_string(&fetch_stub).unwrap(),
+            serde_json::to_string(&fetch_log.to_string_lossy()).unwrap(),
+            serde_json::to_string(&fetch_script).unwrap()
+        );
+        fs::write(scripts_dir.join(FETCH_SCRIPT), wrapper).unwrap();
+        fs::write(
+            scripts_dir.join(GENERATE_SCRIPT),
+            format!(
+                "await import({});\n",
+                serde_json::to_string(&generate_script).unwrap()
+            ),
+        )
+        .unwrap();
+        let plan = RunPlan {
+            node: PathBuf::from("node"),
+            scripts_dir: scripts_dir.clone(),
+            runs_dir: runs_dir.clone(),
+        };
+        let settings = RunSettings {
+            token: TOKEN.into(),
+            page_url: "https://www.figma.com/design/KEY/branch/BRANCH/file?node-id=1-1".into(),
+            images: false,
+            ..RunSettings::default()
+        };
+        let first = execute_run(&plan, &settings, &|_| {}).unwrap();
+        assert_eq!(first, "checkout-design-critique");
+        let original_markdown =
+            fs::read(runs_dir.join(&first).join(format!("{first}.md"))).unwrap();
+        let info = outbox::read_thread_info(&runs_dir, &first).unwrap();
+        assert_eq!(info.file_key, "BRANCH");
+        assert_eq!(info.threads[0].root_id, "c1");
+
+        let queued = outbox::with_lock(&app_data, || {
+            outbox::queue_reply(&runs_dir, &first, 0, "c1", "Private local reply")
+        })
+        .unwrap();
+        let push_plan = PushPlan {
+            node: PathBuf::from("node"),
+            scripts_dir,
+            runs_dir: runs_dir.clone(),
+            app_data: app_data.clone(),
+        };
+        write_stubbed_worker(
+            &push_plan,
+            &root,
+            json!({
+                "comments": [{"id":"c1", "parent_id":null, "reactions":[]}],
+                "posts": [{"status":201, "body":{"id":"posted-c1", "parent_id":"c1"}}]
+            }),
+        );
+        execute_push(&push_plan, &first, queued.revision, TOKEN, &|_| {}).unwrap();
+        assert_eq!(
+            outbox::read(&runs_dir, &first).unwrap().actions[0].status,
+            ActionStatus::Confirmed
+        );
+        assert_eq!(
+            fs::read(runs_dir.join(&first).join(format!("{first}.md"))).unwrap(),
+            original_markdown
+        );
+
+        let synced = execute_run(&plan, &settings, &|_| {}).unwrap();
+        assert_eq!(synced, "checkout-design-critique-1");
+        assert!(outbox::read(&runs_dir, &synced).unwrap().actions.is_empty());
+        assert_eq!(
+            outbox::read(&runs_dir, &first).unwrap().actions[0].status,
+            ActionStatus::Confirmed
+        );
+        let fetch_requests = fs::read_to_string(&fetch_log).unwrap();
+        assert!(fetch_requests.lines().all(|line| {
+            let request: serde_json::Value = serde_json::from_str(line).unwrap();
+            request["method"] == "GET"
+                && request["url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("https://api.figma.com/"))
+        }));
+        let push_requests = fs::read_to_string(root.join("requests.jsonl")).unwrap();
+        assert_eq!(push_requests.matches("\"method\":\"POST\"").count(), 1);
+        assert!(push_requests.contains("/files/BRANCH/comments"));
+
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        let copy = runs::copy_run_to(&runs_dir, &first, &downloads).unwrap();
+        assert!(copy.join("source.json").is_file());
+        assert!(copy.join("title.txt").is_file());
+        assert!(copy.join("checkout-figma-comments.json").is_file());
+        assert_eq!(
+            fs::read(copy.join(format!("{first}.md"))).unwrap(),
+            original_markdown
+        );
+        assert!(!copy.join("outbox.json").exists());
+        for entry in fs::read_dir(&copy).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                let contents = fs::read_to_string(entry.path()).unwrap();
+                assert!(!contents.contains(TOKEN));
+                assert!(!contents.contains("Private local reply"));
+            }
+        }
+        outbox::with_lock(&app_data, || runs::delete_run_in(&runs_dir, &first)).unwrap();
+        assert!(!runs_dir.join(&first).exists());
+        assert!(copy.is_dir());
+        outbox::with_lock(&app_data, || runs::delete_all_runs_in(&runs_dir)).unwrap();
+        assert!(!runs_dir.join(&synced).exists());
         let _ = fs::remove_dir_all(root);
     }
 }

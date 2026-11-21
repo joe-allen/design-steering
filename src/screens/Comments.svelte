@@ -5,11 +5,18 @@
   import { copyRun } from '../lib/api.js';
   import {
     backToComments,
+    cancelPushReview,
+    confirmPush,
     getComments,
+    lockCritique,
+    navigateTo,
+    readyUpdateCount,
+    reviewPush,
     session,
     startNewPage,
     syncRun,
     toggleCritiqueLayout as updateLayout,
+    unlockCritique,
   } from '../lib/session.svelte.js';
 
   async function download() {
@@ -29,6 +36,12 @@
   }
 
   const showForm = $derived(!session.run || session.newPage);
+  const readyCount = $derived(readyUpdateCount(session.outbox, session.replyDrafts));
+
+  function threadLabel(rootId) {
+    const thread = session.threadInfo?.threads.find((item) => item.rootId === rootId);
+    return thread ? `${thread.frame} — Pin ${thread.pin} (thread ${thread.rootId})` : `Thread ${rootId}`;
+  }
 </script>
 
 <section class="screen">
@@ -39,7 +52,11 @@
       </div>
 
       <p class="muted" role="status">
-        {session.step === 'generate' ? 'Generating the critique...' : 'Fetching comments from Figma...'}
+        {session.step === 'push'
+          ? 'Pushing changes to Figma...'
+          : session.step === 'generate'
+            ? 'Generating the critique...'
+            : 'Fetching comments from Figma...'}
       </p>
     </div>
   {:else}
@@ -62,7 +79,7 @@
     <div class="error" role="alert">
       <p>{session.error}</p>
       {#if session.errorNeedsSettings}
-        <button type="button" class="link" onclick={() => (session.screen = 'settings')}>Open Settings</button>
+        <button type="button" class="link" onclick={() => navigateTo('settings')}>Open Settings</button>
       {/if}
     </div>
   {:else if session.running}
@@ -94,7 +111,14 @@
     {:else}
       <div class="toolbar">
         <div class="toolbar__start">
-          <button type="button" class="action" onclick={startNewPage}>New page</button>
+          <button
+            type="button"
+            class="action"
+            disabled={session.queueBusy || Boolean(session.review)}
+            onclick={startNewPage}
+          >
+            New page
+          </button>
         </div>
         <div class="toolbar__end">
           <button
@@ -122,13 +146,116 @@
               <rect width="18" height="18" x="3" y="3" rx="2" /><path d="M12 3v18" />
             </svg>
           </button>
-          <button type="button" class="action" onclick={syncRun}>Sync comments</button>
+          {#if session.unlocked && readyCount}
+            <button
+              type="button"
+              class="action"
+              disabled={session.transitionBusy || Boolean(session.review)}
+              onclick={reviewPush}
+            >
+              Save {readyCount}
+              {readyCount === 1 ? 'update' : 'updates'}
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="action"
+              disabled={session.queueBusy || session.transitionBusy || Boolean(session.review)}
+              onclick={syncRun}
+            >
+              Sync comments
+            </button>
+          {/if}
           <button type="button" class="action" onclick={download}> Download markdown </button>
+          <button
+            type="button"
+            class="action edit-toggle"
+            aria-label="Lock critique"
+            aria-pressed={!session.unlocked}
+            disabled={!session.unlocked || session.transitionBusy || Boolean(session.review)}
+            onclick={lockCritique}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#ffffff"
+              stroke-width="1"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="lucide lucide-lock preview-icon"
+            >
+              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="action edit-toggle"
+            aria-label="Unlock critique"
+            aria-pressed={session.unlocked}
+            disabled={session.unlocked ||
+              session.actionsLoading ||
+              !session.threadInfo ||
+              !session.outbox ||
+              Boolean(session.actionsError) ||
+              session.transitionBusy ||
+              Boolean(session.review)}
+            onclick={unlockCritique}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#ffffff"
+              stroke-width="1"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="lucide lucide-lock-open preview-icon"
+            >
+              <rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" />
+            </svg>
+          </button>
         </div>
       </div>
       <div class="scroll critique-container">
-        <Critique markdown={session.run.markdown} runDir={session.run.dir} layout={session.critiqueLayout} />
+        {#if session.actionsLoading}
+          <p class="muted" role="status">Loading thread actions...</p>
+        {:else if session.actionsError}
+          <p class="muted" role="status">{session.actionsError}</p>
+        {/if}
+        {#key session.run.id}
+          <Critique
+            markdown={session.run.markdown}
+            runDir={session.run.dir}
+            layout={session.critiqueLayout}
+            threadInfo={session.threadInfo}
+            outbox={session.outbox}
+          />
+        {/key}
       </div>
+      {#if session.review}
+        <dialog open class="review" aria-labelledby="review-heading">
+          <h2 id="review-heading">Review changes</h2>
+          <p>Destination: <span class="destination">{session.review.destination}</span></p>
+          <p>Changes will be sent using the account associated with the token saved in Settings.</p>
+          <ul>
+            {#each session.review.actions as action (action.id)}
+              <li>
+                <strong>{threadLabel(action.rootId)}</strong> · {action.kind === 'reply' ? 'Reply' : 'Done mark'}
+                {#if action.kind === 'reply'}<p class="reply-text">{action.text}</p>{/if}
+              </li>
+            {/each}
+          </ul>
+          <div class="review-buttons">
+            <button type="button" class="action" onclick={confirmPush}>Send to Figma</button>
+            <button type="button" class="action" onclick={cancelPushReview}>Cancel</button>
+          </div>
+        </dialog>
+      {/if}
     {/if}
   {/if}
 </section>
@@ -166,14 +293,21 @@
 
   .toolbar__end {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 0.5rem;
   }
 
-  .layout-toggle {
+  .layout-toggle,
+  .edit-toggle {
     aspect-ratio: 1 / 1;
     width: 48px;
     padding: 0;
     justify-content: center;
+  }
+
+  .edit-toggle[aria-pressed='true'] {
+    background: var(--surface-item);
   }
 
   .layout-toggle[aria-pressed='true'] svg {
@@ -255,6 +389,51 @@
     overflow: auto;
     border-radius: 8px;
     font-size: 12px;
+    white-space: pre-wrap;
+  }
+
+  .review {
+    max-inline-size: min(900px, calc(100% - 64px));
+    max-block-size: calc(100% - 64px);
+    padding: 20px;
+    overflow: auto;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--ink);
+    font-size: 14px;
+  }
+
+  .review h2 {
+    margin: 0 0 12px;
+    font-size: 18px;
+  }
+  .review ul {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .review li {
+    padding: 12px;
+    border-radius: 6px;
+    background: var(--surface-item);
+  }
+  .review-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-block-start: 16px;
+  }
+  .review-buttons .action {
+    background: var(--surface-item);
+  }
+  .destination,
+  .reply-text {
+    overflow-wrap: anywhere;
+  }
+  .reply-text {
     white-space: pre-wrap;
   }
 

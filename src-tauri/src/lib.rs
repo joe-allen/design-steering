@@ -208,6 +208,14 @@ fn delete_all_runs(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--design-steering-push-worker")
+    {
+        std::process::exit(runner::run_push_worker_from_args(&args[2..]));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())

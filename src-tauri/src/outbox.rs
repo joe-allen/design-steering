@@ -12,7 +12,7 @@ const OUTBOX_VERSION: u32 = 1;
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct AppLock {
-    file: fs::File,
+    _file: fs::File,
 }
 
 impl AppLock {
@@ -40,7 +40,7 @@ impl AppLock {
             .open(&path)
             .map_err(|error| format!("Could not open the app data lock: {error}"))?;
         match file.try_lock() {
-            Ok(()) => Ok(Self { file }),
+            Ok(()) => Ok(Self { _file: file }),
             Err(fs::TryLockError::WouldBlock) => {
                 Err("Another Design Steering instance is busy. Try again when it finishes.".into())
             }
@@ -48,12 +48,6 @@ impl AppLock {
                 Err(format!("Could not acquire the app data lock: {error}"))
             }
         }
-    }
-
-    pub fn child_handle(&self) -> Result<fs::File, String> {
-        self.file
-            .try_clone()
-            .map_err(|error| format!("Could not pass the app data lock to the worker: {error}"))
     }
 }
 
@@ -779,9 +773,27 @@ mod tests {
 
         holder.kill().unwrap();
         holder.wait().unwrap();
-        let queued = with_lock(&app_data, || queue_reply(&runs, &id, 0, "root", "Hello")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let queued = loop {
+            match with_lock(&app_data, || queue_reply(&runs, &id, 0, "root", "Hello")) {
+                Ok(queued) => break queued,
+                Err(error) if error.contains("Another") && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
         assert_eq!(queued.actions.len(), 1);
-        with_lock(&app_data, || runs::delete_run_in(&runs, &id)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match with_lock(&app_data, || runs::delete_run_in(&runs, &id)) {
+                Ok(()) => break,
+                Err(error) if error.contains("Another") && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
         assert!(!runs.join(&id).exists());
         let _ = fs::remove_dir_all(runs);
     }

@@ -2,6 +2,7 @@ use crate::node::{self, hide_window};
 use crate::outbox::{self, ActionStatus, AppLock};
 use crate::runs;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -341,43 +342,42 @@ pub fn execute_push(
     if token.is_empty() {
         return Err("The Figma token is missing. Add it in Settings.".into());
     }
-    let lock = AppLock::acquire(&plan.app_data)?;
-    let outbox = outbox::read(&plan.runs_dir, id)?;
-    outbox::check_revision(&outbox, reviewed_revision)?;
-    if !outbox.actions.iter().any(|action| {
-        matches!(
-            action.status,
-            ActionStatus::Pending | ActionStatus::Rejected
-        )
-    }) {
-        return Err("There are no reviewed actions ready to push.".into());
-    }
-    let run_dir = outbox::resolve_writable_run(&plan.runs_dir, id)?;
-    let script = plan.scripts_dir.join(PUSH_SCRIPT);
-    if !script.is_file() {
-        return Err("The bundled push script was not found. Reinstall Design Steering.".into());
-    }
-    let replies: Vec<String> = outbox
-        .actions
-        .iter()
-        .filter_map(|action| action.text.clone())
-        .collect();
-    let mut command = Command::new(&plan.node);
+    emit(RunEvent::Step {
+        step: "push".into(),
+    });
+
+    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    #[cfg(test)]
+    command.args(["--exact", "runner::tests::push_lock_worker", "--nocapture"]);
+    #[cfg(not(test))]
     command
-        .arg(&script)
-        .arg(&run_dir)
-        .arg(reviewed_revision.to_string())
-        .env_remove("FIGMA_TOKEN")
+        .arg("--design-steering-push-worker")
+        .arg(&plan.app_data)
+        .arg(&plan.runs_dir)
+        .arg(&plan.scripts_dir)
+        .arg(&plan.node)
+        .arg(id)
+        .arg(reviewed_revision.to_string());
+    command
         .env_remove("FIGMA_PAGE_URL")
         .env_remove("NODE_OPTIONS")
         .env("FIGMA_TOKEN", token)
         .stdin(Stdio::piped())
-        .stdout(Stdio::from(lock.child_handle()?))
+        .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    #[cfg(test)]
+    command
+        .env("DESIGN_STEERING_TEST_PUSH_WORKER", "1")
+        .env("DESIGN_STEERING_TEST_APP_DATA", &plan.app_data)
+        .env("DESIGN_STEERING_TEST_RUNS_DIR", &plan.runs_dir)
+        .env("DESIGN_STEERING_TEST_SCRIPTS_DIR", &plan.scripts_dir)
+        .env("DESIGN_STEERING_TEST_NODE", &plan.node)
+        .env("DESIGN_STEERING_TEST_RUN_ID", id)
+        .env(
+            "DESIGN_STEERING_TEST_REVISION",
+            reviewed_revision.to_string(),
+        );
     hide_window(&mut command);
-    emit(RunEvent::Step {
-        step: "push".into(),
-    });
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start the push worker: {error}"))?;
@@ -392,7 +392,7 @@ pub fn execute_push(
             Ok(0) => break,
             Ok(_) => {
                 let raw = String::from_utf8_lossy(&buffer);
-                let line = redact_push(raw.trim_end(), token, &replies);
+                let line = redact_push(raw.trim_end(), token, &[]);
                 emit(RunEvent::Log { line: line.clone() });
                 lines.push(line);
             }
@@ -427,6 +427,130 @@ pub fn execute_push(
     })
 }
 
+fn execute_push_worker(
+    plan: &PushPlan,
+    id: &str,
+    reviewed_revision: u64,
+    token: &str,
+    emit: &(dyn Fn(RunEvent) + Send + Sync),
+) -> Result<(), String> {
+    let _lock = AppLock::acquire(&plan.app_data)?;
+    let outbox = outbox::read(&plan.runs_dir, id)?;
+    outbox::check_revision(&outbox, reviewed_revision)?;
+    if !outbox.actions.iter().any(|action| {
+        matches!(
+            action.status,
+            ActionStatus::Pending | ActionStatus::Rejected
+        )
+    }) {
+        return Err("There are no reviewed actions ready to push.".into());
+    }
+    let run_dir = outbox::resolve_writable_run(&plan.runs_dir, id)?;
+    let script = plan.scripts_dir.join(PUSH_SCRIPT);
+    if !script.is_file() {
+        return Err("The bundled push script was not found. Reinstall Design Steering.".into());
+    }
+    let replies: Vec<String> = outbox
+        .actions
+        .iter()
+        .filter_map(|action| action.text.clone())
+        .collect();
+    let mut command = Command::new(&plan.node);
+    command
+        .arg(&script)
+        .arg(&run_dir)
+        .arg(reviewed_revision.to_string())
+        .env_remove("FIGMA_TOKEN")
+        .env_remove("FIGMA_PAGE_URL")
+        .env_remove("NODE_OPTIONS")
+        .env("FIGMA_TOKEN", token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start the push worker: {error}"))?;
+    let control = child.stdin.take().expect("stdin is piped");
+    let mut parent = std::io::stdin();
+    std::thread::spawn(move || {
+        let _ = parent.read_to_end(&mut Vec::new());
+        drop(control);
+    });
+
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let mut reader = BufReader::new(stderr);
+    let mut buffer = Vec::new();
+    let mut lines = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                let raw = String::from_utf8_lossy(&buffer);
+                let line = redact_push(raw.trim_end(), token, &replies);
+                emit(RunEvent::Log { line: line.clone() });
+                lines.push(line);
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Could not read push progress: {error}. Check Figma before retrying an in-flight action."));
+            }
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("Could not wait for the push worker: {error}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    let non_empty: Vec<&String> = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let tail: Vec<&str> = non_empty
+        .iter()
+        .skip(non_empty.len().saturating_sub(ERROR_TAIL_LINES))
+        .map(|line| line.as_str())
+        .collect();
+    Err(if tail.is_empty() {
+        format!("The push worker exited with {status}. Check Figma before retrying an in-flight action.")
+    } else {
+        tail.join("\n")
+    })
+}
+
+pub fn run_push_worker_from_args(args: &[OsString]) -> i32 {
+    if args.len() != 6 {
+        eprintln!("The internal push worker arguments are invalid.");
+        return 2;
+    }
+    let id = args[4].to_string_lossy();
+    let Ok(reviewed_revision) = args[5].to_string_lossy().parse::<u64>() else {
+        eprintln!("The reviewed outbox revision is invalid.");
+        return 2;
+    };
+    let plan = PushPlan {
+        app_data: PathBuf::from(&args[0]),
+        runs_dir: PathBuf::from(&args[1]),
+        scripts_dir: PathBuf::from(&args[2]),
+        node: PathBuf::from(&args[3]),
+    };
+    let token = std::env::var("FIGMA_TOKEN").unwrap_or_default();
+    match execute_push_worker(&plan, &id, reviewed_revision, &token, &|event| {
+        if let RunEvent::Log { line } = event {
+            eprintln!("{line}");
+        }
+    }) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +560,26 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const TOKEN: &str = "figd_super-secret-token";
+
+    #[test]
+    fn push_lock_worker() {
+        if std::env::var("DESIGN_STEERING_TEST_PUSH_WORKER").as_deref() != Ok("1") {
+            return;
+        }
+        let variables = [
+            "DESIGN_STEERING_TEST_APP_DATA",
+            "DESIGN_STEERING_TEST_RUNS_DIR",
+            "DESIGN_STEERING_TEST_SCRIPTS_DIR",
+            "DESIGN_STEERING_TEST_NODE",
+            "DESIGN_STEERING_TEST_RUN_ID",
+            "DESIGN_STEERING_TEST_REVISION",
+        ];
+        let args: Vec<OsString> = variables
+            .iter()
+            .map(|name| std::env::var_os(name).expect("push worker argument is set"))
+            .collect();
+        std::process::exit(run_push_worker_from_args(&args));
+    }
 
     fn node_available() -> bool {
         Command::new("node")

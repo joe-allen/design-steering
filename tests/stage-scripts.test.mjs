@@ -19,6 +19,7 @@ for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     temps.push(dir);
     mkdirSync(join(dir, 'node_modules', 'sharp'), { recursive: true });
     mkdirSync(join(dir, 'node_modules', '@img', `sharp-${target}`), { recursive: true });
+    mkdirSync(join(dir, 'node_modules', '@img', 'sharp-wasm32'), { recursive: true });
     for (const script of scripts) writeFileSync(join(dir, script), '');
     assert.deepEqual(verifyStage(dir, target).problems, []);
 
@@ -52,6 +53,7 @@ child.execFileSync = (_command, args, { cwd }) => {
   const cpu = args.find((arg) => arg.startsWith('--cpu=')).slice(6);
   mkdirSync(join(cwd, 'node_modules', 'sharp'), { recursive: true });
   mkdirSync(join(cwd, 'node_modules', '@img', 'sharp-' + os + '-' + cpu), { recursive: true });
+  mkdirSync(join(cwd, 'node_modules', '@img', 'sharp-wasm32'), { recursive: true });
 };
 syncBuiltinESMExports();
 `,

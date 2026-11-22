@@ -37,7 +37,9 @@ export function verifyStage(stageDir, target) {
   }
 
   const imgDir = join(modules, '@img');
-  const native = existsSync(imgDir) ? readdirSync(imgDir).filter((name) => name.startsWith('sharp-')) : [];
+  const native = existsSync(imgDir)
+    ? readdirSync(imgDir).filter((name) => name.startsWith('sharp-') && name !== 'sharp-wasm32')
+    : [];
   if (!native.includes(`sharp-${target}`)) problems.push(`@img/sharp-${target} is missing`);
   for (const name of native) {
     if (!name.endsWith(`-${target}`)) problems.push(`binaries for another platform: @img/${name}`);

@@ -98,6 +98,6 @@
 
 ## Workflow follow-up
 
-- Archive this change in a pull request titled `docs(openspec): archive prepare-public-release`.
+- Archive this change in a pull request titled `docs: archive prepare-public-release`.
 - Delete the old `.git` backup and the moved `crit-*` folders when no longer needed.
 - Before making the repository public: decide whether pull requests should also build macOS installers, and consider Dependabot, CodeQL and secret scanning.

@@ -69,7 +69,7 @@
         <button
           type="button"
           class="remove-all"
-          disabled={session.running}
+          disabled={session.running || session.queueBusy}
           onclick={() => (confirming = { all: true })}
         >
           Remove all
@@ -88,7 +88,7 @@
                 class="remove"
                 aria-label={`Remove ${label}`}
                 title="Remove"
-                disabled={session.running}
+                disabled={session.running || session.queueBusy}
                 onclick={() => (confirming = { id: run.id, label })}
               >
                 Remove

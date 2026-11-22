@@ -6,5 +6,3 @@ src-tauri/gen
 src-tauri/resources/scripts/*
 !src-tauri/resources/scripts/.gitkeep
 .DS_Store
-/*-design-critique/
-/*-design-critique-*/

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { handleCritiqueClick, renderCritique } from './render.js';
+import { handleCritiqueClick, renderCritique, threadLink } from './render.js';
 
 const toUrl = (path) => `asset://localhost/${encodeURIComponent(path)}`;
 const render = (markdown) => renderCritique(markdown, { runDir: '/data/runs/home-design-critique', toUrl });
@@ -89,6 +89,12 @@ describe('renderCritique', () => {
     expect(hrefs).toEqual(['https://example.com', null, null]);
     expect(content.querySelector('a').getAttribute('rel')).toBe('noopener noreferrer');
   });
+
+  test('untrusted inputs cannot edit or imitate enabled thread controls', () => {
+    const content = dom(render('<input type="checkbox">\n\n<input type="text" value="editable">'));
+    expect(content.querySelector('input[type=checkbox]').disabled).toBe(true);
+    expect(content.querySelector('input[type=text]')).toBeNull();
+  });
 });
 
 describe('handleCritiqueClick', () => {
@@ -108,6 +114,18 @@ describe('handleCritiqueClick', () => {
     const { event, openExternal } = click('<a href="https://example.com"><span data-target>go</span></a>');
     expect(event.defaultPrevented).toBe(true);
     expect(openExternal).toHaveBeenCalledWith('https://example.com');
+  });
+
+  test('thread links preserve a matching snapshot permalink but reject another file or root', () => {
+    const destination = 'https://www.figma.com/design/FILE/branch/BRANCH/page?node-id=1-1';
+    const thread = { rootId: 'root', link: 'https://www.figma.com/file/BRANCH?node-id=2%3A2#root' };
+    expect(threadLink(destination, 'BRANCH', thread)).toBe(thread.link);
+    expect(threadLink(destination, 'BRANCH', { ...thread, link: thread.link.replace('BRANCH', 'OTHER') })).toBe(
+      `${destination}#root`,
+    );
+    expect(threadLink(destination, 'BRANCH', { ...thread, link: thread.link.replace('#root', '#other') })).toBe(
+      `${destination}#root`,
+    );
   });
 
   test('other links do nothing', () => {

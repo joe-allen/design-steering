@@ -187,6 +187,10 @@ ordered.forEach((frame, i) => {
   frame.items.sort((a, b) => a.thread - b.thread || a.comment.created_at.localeCompare(b.comment.created_at));
   for (const { comment, thread } of frame.items) {
     output.push({
+      file_key: fileKey,
+      id: comment.id,
+      parent_id: comment.parent_id || null,
+      has_done_reaction: (comment.reactions ?? []).some((reaction) => reaction.emoji === ':white_check_mark:'),
       frame: label,
       comment_thread: String(thread),
       user: comment.user.handle,

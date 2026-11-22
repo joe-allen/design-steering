@@ -1,4 +1,5 @@
 mod node;
+mod outbox;
 mod runner;
 mod runs;
 
@@ -10,10 +11,11 @@ use tauri::{AppHandle, Manager};
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn runs_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|dir| dir.join("runs"))
-        .map_err(|error| error.to_string())
+    app_data_dir(app).map(|dir| dir.join("runs"))
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|error| error.to_string())
 }
 
 fn blocking<T: Send + 'static>(
@@ -52,6 +54,32 @@ async fn start_run(
 }
 
 #[tauri::command]
+async fn push_run(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    settings: runner::PushSettings,
+    on_event: Channel<runner::RunEvent>,
+) -> Result<(), String> {
+    let guard = runner::RunGuard::acquire(&RUNNING).ok_or("A run is already in progress.")?;
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map(|dir| dir.join("scripts"))
+        .map_err(|error| error.to_string())?;
+    let runs_dir = runs_dir(&app)?;
+    let app_data = app_data_dir(&app)?;
+    blocking(move || {
+        let _guard = guard;
+        let plan = runner::build_push_plan(&settings, &bundled, &runs_dir, &app_data)?;
+        runner::execute_push(&plan, &id, revision, &settings.token, &|event| {
+            let _ = on_event.send(event);
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 fn list_runs(app: AppHandle) -> Result<Vec<runs::RunSummary>, String> {
     Ok(runs::list_runs_in(&runs_dir(&app)?))
 }
@@ -59,6 +87,99 @@ fn list_runs(app: AppHandle) -> Result<Vec<runs::RunSummary>, String> {
 #[tauri::command]
 fn read_run(app: AppHandle, id: String) -> Result<runs::RunContent, String> {
     runs::read_run_in(&runs_dir(&app)?, &id)
+}
+
+#[tauri::command]
+fn read_threads(app: AppHandle, id: String) -> Result<outbox::ThreadInfo, String> {
+    outbox::read_thread_info(&runs_dir(&app)?, &id)
+}
+
+#[tauri::command]
+fn read_outbox(app: AppHandle, id: String) -> Result<outbox::Outbox, String> {
+    outbox::read(&runs_dir(&app)?, &id)
+}
+
+#[tauri::command]
+fn queue_reply(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    root_id: String,
+    text: String,
+) -> Result<outbox::Outbox, String> {
+    let runs_dir = runs_dir(&app)?;
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || {
+            outbox::queue_reply(&runs_dir, &id, revision, &root_id, &text)
+        })
+    })
+}
+
+#[tauri::command]
+fn queue_done(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    root_id: String,
+) -> Result<outbox::Outbox, String> {
+    let runs_dir = runs_dir(&app)?;
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || {
+            outbox::queue_done(&runs_dir, &id, revision, &root_id)
+        })
+    })
+}
+
+#[tauri::command]
+fn edit_reply(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    action_id: String,
+    text: String,
+) -> Result<outbox::Outbox, String> {
+    let runs_dir = runs_dir(&app)?;
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || {
+            outbox::edit_reply(&runs_dir, &id, revision, &action_id, &text)
+        })
+    })
+}
+
+#[tauri::command]
+fn discard_action(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    action_id: String,
+) -> Result<outbox::Outbox, String> {
+    let runs_dir = runs_dir(&app)?;
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || {
+            outbox::discard(&runs_dir, &id, revision, &action_id)
+        })
+    })
+}
+
+#[tauri::command]
+fn retry_uncertain(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    action_id: String,
+    verified: bool,
+) -> Result<outbox::Outbox, String> {
+    let runs_dir = runs_dir(&app)?;
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || {
+            outbox::retry_uncertain(&runs_dir, &id, revision, &action_id, verified)
+        })
+    })
 }
 
 #[tauri::command]
@@ -70,17 +191,31 @@ fn copy_run(app: AppHandle, id: String, dest: String) -> Result<String, String> 
 #[tauri::command]
 fn delete_run(app: AppHandle, id: String) -> Result<(), String> {
     let runs_dir = runs_dir(&app)?;
-    runner::when_idle(&RUNNING, || runs::delete_run_in(&runs_dir, &id))
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || runs::delete_run_in(&runs_dir, &id))
+    })
 }
 
 #[tauri::command]
 fn delete_all_runs(app: AppHandle) -> Result<(), String> {
     let runs_dir = runs_dir(&app)?;
-    runner::when_idle(&RUNNING, || runs::delete_all_runs_in(&runs_dir))
+    let app_data = app_data_dir(&app)?;
+    runner::when_idle(&RUNNING, || {
+        outbox::with_lock(&app_data, || runs::delete_all_runs_in(&runs_dir))
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--design-steering-push-worker")
+    {
+        std::process::exit(runner::run_push_worker_from_args(&args[2..]));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -88,8 +223,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             detect_node,
             start_run,
+            push_run,
             list_runs,
             read_run,
+            read_threads,
+            read_outbox,
+            queue_reply,
+            queue_done,
+            edit_reply,
+            discard_action,
+            retry_uncertain,
             copy_run,
             delete_run,
             delete_all_runs

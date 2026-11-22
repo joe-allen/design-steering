@@ -2,7 +2,7 @@
   import Comments from './screens/Comments.svelte';
   import History from './screens/History.svelte';
   import Settings from './screens/Settings.svelte';
-  import { initSession, session } from './lib/session.svelte.js';
+  import { initSession, navigateTo, session } from './lib/session.svelte.js';
   import logo from '../ui-design/logo.svg';
 
   const screens = [
@@ -39,7 +39,7 @@
           class="nav-item"
           class:active={session.screen === id}
           aria-current={session.screen === id ? 'page' : undefined}
-          onclick={() => (session.screen = id)}
+          onclick={() => navigateTo(id)}
         >
           <!-- <svg viewBox="0 0 24 24" aria-hidden="true"><path d={icon} /></svg> -->
           <span>{label}</span>

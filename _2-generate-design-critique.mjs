@@ -93,13 +93,41 @@ for (const comment of comments) {
   frames.get(comment.frame).push(comment);
 }
 
-function renderComment({ message, user, resolved_at, comment_thread }) {
+function renderComment(
+  { message, user, resolved_at, comment_thread },
+  prefix = `- [ ] **${comment_thread}**: `,
+  indent = '  ',
+) {
   const lines = message.split('\n');
   const last = lines.length - 1;
   if (showUser) lines[last] += ` (${user})`;
   if (resolved_at) lines[last] += ' [Resolved]';
-  return lines
-    .map((line, i) => (i === 0 ? `- [ ] **${comment_thread}**: ${line}` : line === '' ? '' : `  ${line}`))
+  return lines.map((line, i) => (i === 0 ? `${prefix}${line}` : line === '' ? '' : `${indent}${line}`)).join('\n');
+}
+
+function renderThreads(items) {
+  const replies = new Map();
+  const roots = new Set(items.filter((item) => item.id && item.parent_id === null).map((item) => item.id));
+  for (const item of items) {
+    if (!item.id || !roots.has(item.parent_id)) continue;
+    if (!replies.has(item.parent_id)) replies.set(item.parent_id, []);
+    replies.get(item.parent_id).push(item);
+  }
+  return items
+    .flatMap((item) => {
+      if (item.id && roots.has(item.parent_id)) return [];
+      if (!roots.has(item.id)) return [renderComment(item)];
+      const pin = /^\d+$/.test(item.comment_thread) ? item.comment_thread : '?';
+      const link = /^https:\/\/www\.figma\.com\/file\/[A-Za-z0-9_-]+\?node-id=[A-Za-z0-9%:_-]+#[A-Za-z0-9_-]+$/.test(
+        item.link,
+      )
+        ? `[${pin}](${item.link})`
+        : pin;
+      return [
+        renderComment(item, `- [${item.has_done_reaction === true ? 'x' : ' '}] **${link}**: `),
+        ...(replies.get(item.id) ?? []).map((reply) => renderComment(reply, '  - ', '    ')),
+      ];
+    })
     .join('\n');
 }
 
@@ -109,7 +137,7 @@ const general = [];
 for (const [frame, items] of frames) {
   const number = Number(/^(\d+)\./.exec(frame)?.[1]);
   const image = imagesByNumber.get(number);
-  const body = items.map(renderComment).join('\n');
+  const body = renderThreads(items);
   if (image) {
     withImage.push(
       `<a href="./_frames/${image}"><img src="./_frames/${image}" alt="Frame ${number}" style="max-width: 400px;"></a>\n\n${body}\n`,

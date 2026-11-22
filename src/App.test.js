@@ -7,11 +7,18 @@ vi.mock('@tauri-apps/plugin-store', async () => import('./test/fake-store.js'));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 vi.mock('./lib/api.js', () => ({
-  appVersion: vi.fn().mockResolvedValue('0.0.0'),
   detectNode: vi.fn(),
   startRun: vi.fn(),
   listRuns: vi.fn().mockResolvedValue([]),
   readRun: vi.fn(),
+  readThreads: vi.fn(),
+  readOutbox: vi.fn(),
+  queueReply: vi.fn(),
+  queueDone: vi.fn(),
+  editReply: vi.fn(),
+  discardAction: vi.fn(),
+  retryUncertain: vi.fn(),
+  pushRun: vi.fn(),
   copyRun: vi.fn(),
 }));
 

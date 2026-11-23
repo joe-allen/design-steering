@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/joe-allen/design-steering/compare/v0.1.1...v0.2.0) (2026-11-23)
+
+
+### Features
+
+* **viewer:** push replies to Figma ([#9](https://github.com/joe-allen/design-steering/issues/9)) ([ad6a363](https://github.com/joe-allen/design-steering/commit/ad6a363f6cea5caba1f1ee84d59a986f627f382c))
+
 ## [0.1.1](https://github.com/joe-allen/design-steering/compare/v0.1.0...v0.1.1) (2026-11-19)
 
 

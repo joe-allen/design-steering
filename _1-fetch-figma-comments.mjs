@@ -111,51 +111,102 @@ const {
 } = parseArgs(process.argv.slice(2));
 const { fileKey, nodeId } = parseFigmaUrl(rawUrl);
 
-async function figma(path, retried = false) {
+async function figma(path, operation, retried = false) {
   const res = await fetch(`${API}${path}`, { headers: { 'X-Figma-Token': token } });
-  if (res.status === 429 && !retried) {
-    const wait = Number(res.headers.get('retry-after')) || 5;
-    console.error(`Rate limited, retrying in ${wait}s...`);
+  const endpoint = path.split('?')[0];
+  const serverError = [500, 502, 503, 504].includes(res.status);
+  if (!retried && (res.status === 429 || serverError)) {
+    const wait = Number(res.headers.get('retry-after')) || (res.status === 429 ? 5 : 1);
+    const reason =
+      res.status === 429 ? 'Rate limited' : `Figma returned ${res.status} while ${operation} (${endpoint})`;
+    console.error(`${reason}, retrying in ${wait}s...`);
+    await res.body?.cancel();
     await new Promise((resolve) => setTimeout(resolve, wait * 1000));
-    return figma(path, true);
+    return figma(path, operation, true);
   }
   if (res.status === 403) fail('Figma returned 403: the token is invalid, expired, or missing a required scope.');
   if (res.status === 404) fail('Figma returned 404: file or node not found (or the token cannot access it).');
-  if (!res.ok) fail(`Figma returned ${res.status} for ${path.split('?')[0]}.`);
+  if (!res.ok)
+    fail(`Figma returned ${res.status} while ${operation} (${endpoint}).${serverError ? ' Try again later.' : ''}`);
   return res.json();
 }
 
+const NODE_BATCH = 8;
+async function readNodes(ids, depth, operation) {
+  const query = ids.map(encodeURIComponent).join(',');
+  const { nodes } = await figma(`/files/${fileKey}/nodes?ids=${query}&depth=${depth}`, operation);
+  return ids.map((id) => {
+    const node = nodes[id]?.document;
+    if (!node) fail(`A Figma layer could not be found while ${operation}. Fetch the page again.`);
+    return node;
+  });
+}
+
 // 1. Resolve the page that the URL's node-id belongs to.
-const file = await figma(`/files/${fileKey}?depth=2`);
-const page = file.document.children.find((p) => p.id === nodeId || p.children?.some((frame) => frame.id === nodeId));
+const file = await figma(`/files/${fileKey}?depth=1`, 'listing pages');
+const pages = file.document.children;
+let page;
+if (pages.some((p) => p.id === nodeId)) {
+  [page] = await readNodes([nodeId], 1, 'reading the selected page');
+} else {
+  for (let i = 0; i < pages.length && !page; i += NODE_BATCH) {
+    const ids = pages.slice(i, i + NODE_BATCH).map((p) => p.id);
+    const outlines = await readNodes(ids, 1, 'locating the linked frame');
+    page = outlines.find((p) => p.children?.some((frame) => frame.id === nodeId));
+  }
+}
 if (!page) {
-  const pages = file.document.children.map((p) => `  ${p.id}  ${p.name}`).join('\n');
-  fail(`node-id ${nodeId} is not a page or a top-level frame. Use a page URL. Pages:\n${pages}`);
+  const choices = pages.map((p) => `  ${p.id}  ${p.name}`).join('\n');
+  fail(`node-id ${nodeId} is not a page or a top-level frame. Use a page URL. Pages:\n${choices}`);
 }
 console.error(`Page: "${page.name}" (${page.id})`);
 
-// 2. Map every node on the page to its top-level frame.
-const pageNodes = await figma(`/files/${fileKey}/nodes?ids=${encodeURIComponent(page.id)}`);
-const frameByNode = new Map();
-const boxByNode = new Map();
-function index(node, frame) {
-  frameByNode.set(node.id, frame);
-  if (node.absoluteBoundingBox) boxByNode.set(node.id, node.absoluteBoundingBox);
-  for (const child of node.children ?? []) index(child, frame);
-}
-for (const top of pageNodes.nodes[page.id].document.children ?? []) {
-  index(top, { id: top.id, name: top.name, box: top.absoluteBoundingBox });
-}
-
-// 3. Fetch all file comments and keep those on this page.
-const { comments } = await figma(`/files/${fileKey}/comments?as_md=true`);
+// 2. Resolve pins inside the selected page, never by looking up file-wide comment anchors.
+const { comments } = await figma(`/files/${fileKey}/comments?as_md=true`, 'fetching comments');
 const byId = new Map(comments.map((c) => [c.id, c]));
+const remaining = new Set(
+  comments
+    .filter((c) => !c.parent_id)
+    .map((c) => c.client_meta?.node_id)
+    .filter(Boolean),
+);
+const pinsByNode = new Map();
+const pending = [];
+function index(node, frame, depthLeft) {
+  if (remaining.delete(node.id)) {
+    pinsByNode.set(node.id, { frame, box: node.absoluteBoundingBox });
+  }
+  if (depthLeft === 0) {
+    // At the depth cutoff even a non-empty frame can have no children in the response.
+    pending.push({ id: node.id, frame });
+  } else {
+    for (const child of node.children ?? []) index(child, frame, depthLeft - 1);
+  }
+}
+remaining.delete(file.document.id);
+for (const p of pages) remaining.delete(p.id);
+for (const top of page.children ?? []) {
+  index(top, { id: top.id, name: top.name, box: top.absoluteBoundingBox }, 0);
+}
 
+const NODE_DEPTH = 3;
+while (pending.length && remaining.size) {
+  const batch = pending.splice(-NODE_BATCH);
+  const trees = await readNodes(
+    batch.map((entry) => entry.id),
+    NODE_DEPTH,
+    'matching pins to frames on the selected page',
+  );
+  trees.forEach((tree, i) => index(tree, batch[i].frame, NODE_DEPTH));
+}
+
+// 3. Group matching comments and replies by their top-level frame.
 const frames = new Map();
 for (const comment of comments) {
   const rootComment = comment.parent_id ? byId.get(comment.parent_id) : comment;
-  const frame = frameByNode.get(rootComment?.client_meta?.node_id);
-  if (!frame) continue;
+  const pin = pinsByNode.get(rootComment?.client_meta?.node_id);
+  if (!pin) continue;
+  const { frame, box: nodeBox } = pin;
   const thread = Number(rootComment.order_id);
   if (!frames.has(frame.id)) frames.set(frame.id, { ...frame, maxThread: 0, items: [], pins: [] });
   const entry = frames.get(frame.id);
@@ -164,7 +215,6 @@ for (const comment of comments) {
 
   // One pin per thread, positioned in top-level-frame coordinates (design units).
   if (!comment.parent_id) {
-    const nodeBox = boxByNode.get(comment.client_meta.node_id);
     const offset = comment.client_meta.node_offset;
     if (nodeBox && offset && frame.box) {
       entry.pins.push({ thread, x: nodeBox.x + offset.x - frame.box.x, y: nodeBox.y + offset.y - frame.box.y });
@@ -267,7 +317,7 @@ if (wantImages) {
   for (let i = 0; i < framesToExport.length; i += BATCH) {
     const batch = framesToExport.slice(i, i + BATCH);
     const ids = batch.map((f) => encodeURIComponent(f.id)).join(',');
-    const { images } = await figma(`/images/${fileKey}?ids=${ids}&format=png&scale=2`);
+    const { images } = await figma(`/images/${fileKey}?ids=${ids}&format=png&scale=2`, 'requesting frame images');
     for (const frame of batch) {
       const imageUrl = images[frame.id];
       if (!imageUrl) {

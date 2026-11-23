@@ -53,6 +53,30 @@ test('branch snapshots preserve root and reply identity alongside display fields
   assert.equal(rows[1].has_done_reaction, false);
 });
 
+test('a frame link exports deeply nested pins and replies when file-wide lookups return 500', () => {
+  const out = tempDir();
+  const result = runFetch(script, [`--out=${out}`], 'https://www.figma.com/design/LARGE/file?node-id=2-2');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /500.*retry/i);
+  assert.doesNotMatch(result.stderr, /No position for pin/);
+  const rows = JSON.parse(readFileSync(join(out, 'checkout-design-critique', 'checkout-figma-comments.json'), 'utf8'));
+  assert.deepEqual(
+    rows.map(({ id, frame, comment_thread }) => [id, frame, comment_thread]),
+    [
+      ['c1', '1. Frame A', '1'],
+      ['c2', '1. Frame A', '1'],
+    ],
+  );
+});
+
+test('a persistent Figma server error fails the fetch without writing a partial run', () => {
+  const out = tempDir();
+  const result = runFetch(script, [`--out=${out}`], 'https://www.figma.com/design/DOWN/file?node-id=1-1');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Figma returned 500 while matching pins to frames.*Try again later/i);
+  assert.deepEqual(readdirSync(out), []);
+});
+
 test('default: run folder is created next to the script', () => {
   const dir = tempDir();
   const copy = join(dir, '_1-fetch-figma-comments.mjs');

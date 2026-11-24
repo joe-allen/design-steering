@@ -155,13 +155,20 @@
           <button
             type="button"
             class="inline inline--bg-light"
+            aria-label="Discard reply"
             disabled={draft.discarding}
             onclick={() => discardDraft(draft.key)}
           >
             Discard
           </button>
           {#if draft.error}
-            <button type="button" class="inline inline--bg-light" disabled={draft.discarding} onclick={retryDraftSave}>
+            <button
+              type="button"
+              class="inline inline--bg-light"
+              aria-label="Retry saving draft"
+              disabled={draft.discarding}
+              onclick={retryDraftSave}
+            >
               Retry
             </button>
           {/if}

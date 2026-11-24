@@ -1,5 +1,6 @@
 <script>
   import { open } from '@tauri-apps/plugin-dialog';
+  import { openUrl } from '@tauri-apps/plugin-opener';
   import Critique from '../components/Critique.svelte';
   import LoadingLogo from '../components/LoadingLogo.svelte';
   import { copyRun } from '../lib/api.js';
@@ -49,6 +50,17 @@
     const { left, right, top, bottom } = event.currentTarget.getBoundingClientRect();
     if (event.clientX < left || event.clientX > right || event.clientY < top || event.clientY > bottom) {
       cancelPushReview();
+    }
+  }
+
+  // Links must not navigate the app window away; open them in the system browser.
+  async function openDestination(event) {
+    event.preventDefault();
+    try {
+      await openUrl(session.review.destination);
+    } catch (error) {
+      session.error = `Could not open Figma: ${error}`;
+      session.errorNeedsSettings = false;
     }
   }
 </script>
@@ -175,6 +187,7 @@
                 stroke-linejoin="round"
                 class="lucide lucide-save preview-icon"
               >
+                <title>Save</title>
                 <path
                   d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"
                 /><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /><path d="M7 3v4a1 1 0 0 0 1 1h7" />
@@ -310,16 +323,16 @@
                 <span class="lowercase">
                   {action.kind === 'reply' ? 'Reply' : 'Done mark'}
                 </span>
-                {#if action.kind === 'reply'}<p class="reply-text">
-                    {action.text}
-                  </p>{/if}
+                {#if action.kind === 'reply'}
+                  <p class="reply-text">{action.text}</p>
+                {/if}
               </li>
             {/each}
           </ul>
 
           <p class="muted">
-            Changes will be sent to <a href={session.review.destination}>Figma</a> using the account associated with the token
-            saved in Settings.
+            Changes will be sent to <a href={session.review.destination} onclick={openDestination}>Figma</a> using the account
+            associated with the token saved in Settings.
           </p>
           <div class="review-buttons">
             <button type="button" class="action" onclick={confirmPush}>
@@ -523,11 +536,8 @@
   .review-buttons .action {
     background: var(--surface-item);
   }
-  .destination,
   .reply-text {
     overflow-wrap: anywhere;
-  }
-  .reply-text {
     white-space: pre-wrap;
   }
 

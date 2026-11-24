@@ -47,7 +47,7 @@ The app runs these same two scripts for you and uses a separate internal worker 
    Click **Save**. The token is stored as plain text in the app's settings file. **Clear token**, followed by **Save**, removes it.
 
 2. Open **Comments**, enter the **Figma Page URL** (the link to the Figma page, or to a top-level frame on it) and an optional **Run name** (names the run folder instead of using the Figma page name), then click **Get comments**. The URL is remembered and pre-fills next time. Progress shows while it runs. If the run fails, its error message replaces the live output; otherwise, the critique appears with these actions:
-   - **Sync comments** fetches the same page again as a new run, using the page the displayed run came from (also for runs opened from History). It never posts changes or copies the earlier run's queue. It is shown while the critique is locked or there are no updates ready to send.
+   - **Pull from Figma** fetches the same page again as a new run, using the page the displayed run came from (also for runs opened from History). It never posts changes or copies the earlier run's queue. It is shown while the critique is locked or there are no updates ready to send.
    - **Unlock critique** enables inline reply and done controls. **Lock critique** returns to the read-only preview without sending pending work.
    - **Save 1 update** or **Save N updates** replaces Sync while unlocked with updates ready to review. Only **Send to Figma** in that review posts them.
    - **Download markdown** copies the fetched markdown, comments JSON, frame images, title and source record to a folder you choose. It excludes local drafts, delivery results and temporary outbox files.
@@ -65,7 +65,7 @@ Runs are stored in the app's data folder, in a `runs` folder: `~/Library/Applica
 3. While unlocked, choose **Save 1 update** or **Save N updates**. Each reply and done mark counts as one update. Review the destination and exact actions, then select **Send to Figma** or **Cancel**. The saved token's account is used. Pushing requires `file_comments:write` and access to the file; read-only tokens still work for fetching and Sync. A 403 can mean a token, scope, or file-access problem; use **Open Settings** to check the token.
 4. Results appear beneath their threads and distinguish **Sent**, **Rejected**, **Already done in Figma**, and **Needs verification in Figma**. Confirmed actions are not resent. For an uncertain action, unlock the critique and use **Open in Figma** to check it, then **Retry after checking** and **I checked Figma; retry** only if it was not sent. Retrying an action that did reach Figma can create a duplicate.
 
-Pushing does not edit the saved critique or refresh it. Lock the critique and use **Sync comments** to fetch a new snapshot; unfinished actions remain on the earlier run in History. Download the new run to share the latest Figma state. Use **Download markdown**, rather than copying the app's run folder, to exclude the private outbox.
+Pushing does not edit the saved critique or refresh it. Lock the critique and use **Pull from Figma** to fetch a new snapshot; unfinished actions remain on the earlier run in History. Download the new run to share the latest Figma state. Use **Download markdown**, rather than copying the app's run folder, to exclude the private outbox.
 
 ### Build from source
 

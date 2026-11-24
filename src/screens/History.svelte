@@ -83,7 +83,7 @@
             {@const label = `${formatDate(run.modifiedMs)} ${run.name}`}
             <li>
               <button type="button" class="open space-between" onclick={() => openRun(run.id)}>
-                <span class="muted">{formatDate(run.modifiedMs)}</span><span>{run.name}</span>
+                <span class="muted">{formatDate(run.modifiedMs)}</span> <span>{run.name}</span>
               </button>
               <button
                 type="button"

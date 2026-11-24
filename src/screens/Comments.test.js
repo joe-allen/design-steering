@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { disk } from '../test/fake-store.js';
@@ -256,6 +256,38 @@ describe('critique layout', () => {
     expect(restoredCritique.innerHTML).toBe(content);
     expect(startRun).not.toHaveBeenCalled();
     expect(readRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('image viewer', () => {
+  test.each(['click', 'cancel'])('closing via %s resumes tab order at the clicked image', async (dismiss) => {
+    session.run = {
+      ...RUN,
+      markdown: ['First', 'Second', 'Third'].map((name, i) => `![${name}](./_frames/${i + 1}-frame.png)`).join('\n\n'),
+    };
+    render(Comments);
+    const first = button('View First full size');
+    const opener = button('View Second full size');
+    const third = button('View Third full size');
+
+    // macOS WebKit can activate a button on click without moving focus to it.
+    first.focus();
+    await fireEvent.click(within(opener).getByRole('img'));
+    const viewer = screen.getByRole('dialog', { name: 'Second' });
+    if (dismiss === 'cancel') {
+      await fireEvent(viewer, new Event('cancel', { cancelable: true }));
+    } else {
+      await fireEvent.click(within(viewer).getByRole('img'));
+    }
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    await userEvent.tab();
+    expect(document.activeElement).toBe(third);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(opener);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(first);
   });
 });
 
@@ -879,6 +911,53 @@ describe('download', () => {
       expect(pushRun).not.toHaveBeenCalled();
     });
 
+    test('native dialog cancellation keeps queued changes and allows reopening the review', async () => {
+      const backend = await actionsForRun([
+        { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Keep this reply' },
+      ]);
+      const showModal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
+      render(Comments);
+      await userEvent.click(button('Unlock critique'));
+      await userEvent.click(button('1 update'));
+      const review = await screen.findByRole('dialog', { name: 'Review changes' });
+      expect(showModal).toHaveBeenCalledTimes(1);
+      expect(review.open).toBe(true);
+
+      review.dispatchEvent(new Event('cancel'));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(session.review).toBeNull();
+      expect(backend.get().actions[0].text).toBe('Keep this reply');
+      expect(pushRun).not.toHaveBeenCalled();
+
+      await userEvent.click(button('1 update'));
+      expect((await screen.findByRole('dialog', { name: 'Review changes' })).open).toBe(true);
+      expect(showModal).toHaveBeenCalledTimes(2);
+      await userEvent.click(button('Cancel'));
+      showModal.mockRestore();
+    });
+
+    test('clicking the backdrop cancels review but clicking its content or padding does not', async () => {
+      const backend = await actionsForRun([
+        { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Keep this reply' },
+      ]);
+      render(Comments);
+      await userEvent.click(button('Unlock critique'));
+      await userEvent.click(button('1 update'));
+      const review = await screen.findByRole('dialog', { name: 'Review changes' });
+      vi.spyOn(review, 'getBoundingClientRect').mockReturnValue(new DOMRect(100, 100, 400, 300));
+
+      await userEvent.click(within(review).getByText('Keep this reply'));
+      review.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 120, clientY: 120 }));
+      expect(session.review).not.toBeNull();
+
+      review.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 20, clientY: 20 }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(session.review).toBeNull();
+      expect(backend.get().actions[0].text).toBe('Keep this reply');
+      expect(pushRun).not.toHaveBeenCalled();
+    });
+
     test('reviews the exact destination and batch, cancels, then confirms without refreshing', async () => {
       const backend = await actionsForRun([
         { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Exact reply\nSecond line' },
@@ -917,8 +996,8 @@ describe('download', () => {
         ],
       });
       finish();
-      await screen.findByText(/Done mark · Rejected/);
-      expect(screen.getByText(/Reply · Sent/)).toBeTruthy();
+      await screen.findByText(/Done mark rejected/);
+      expect(screen.getByText(/Reply sent/)).toBeTruthy();
       expect(button('Save 1 update')).toBeTruthy();
       await userEvent.click(button('Save 1 update'));
       const retryReview = await screen.findByRole('dialog', { name: 'Review changes' });

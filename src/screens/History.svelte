@@ -80,9 +80,11 @@
       {:else}
         <ul>
           {#each visible as run (run.id)}
-            {@const label = `${formatDate(run.modifiedMs)} - ${run.name}`}
+            {@const label = `${formatDate(run.modifiedMs)} ${run.name}`}
             <li>
-              <button type="button" class="open" onclick={() => openRun(run.id)}>{label}</button>
+              <button type="button" class="open space-between" onclick={() => openRun(run.id)}>
+                <span class="muted">{formatDate(run.modifiedMs)}</span><span>{run.name}</span>
+              </button>
               <button
                 type="button"
                 class="remove"
@@ -91,7 +93,22 @@
                 disabled={session.running || session.queueBusy}
                 onclick={() => (confirming = { id: run.id, label })}
               >
-                Remove
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#1a1a1a"
+                  stroke-width="1"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  class="lucide lucide-trash preview-icon"
+                >
+                  <path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path
+                    d="M3 6h18"
+                  /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
               </button>
             </li>
           {/each}
@@ -129,7 +146,7 @@
     padding-inline: 12px;
     border: 0;
     border-radius: 8px;
-    background: var(--surface-item);
+    background: var(--card);
     color: var(--ink);
     font: inherit;
     font-size: 12px;
@@ -203,5 +220,14 @@
 
   .note.error {
     color: var(--danger);
+  }
+
+  li :global(.space-between) {
+    width: 100%;
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
   }
 </style>

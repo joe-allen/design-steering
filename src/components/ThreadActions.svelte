@@ -99,9 +99,12 @@
 
   {#each actions as action (action.id)}
     <div class="result">
-      <p><strong>{action.kind === 'reply' ? 'Reply' : 'Done mark'} · {statusLabel(action.status)}</strong></p>
+      <small class="muted text-sm">
+        {action.kind === 'reply' ? 'Reply' : 'Done mark'} <span class="lowercase">{statusLabel(action.status)}</span>
+      </small>
+
       {#if action.kind === 'reply' && !drafts.some((draft) => draft.actionId === action.id)}
-        <p class="reply-text">{action.text}</p>
+        <span class="muted text-sm">{action.text}</span>
       {/if}
       {#if action.error}<p class="result-error">{action.error}</p>{/if}
       {#if action.error && /\b(?:401|403)\b|token|file_comments:write/i.test(action.error)}
@@ -149,12 +152,17 @@
             oninput={(event) => updateDraft(draft.key, event.currentTarget.value)}></textarea>
         </label>
         <div class="buttons">
-          <button type="button" class="small" disabled={draft.discarding} onclick={() => discardDraft(draft.key)}>
-            Discard reply
+          <button
+            type="button"
+            class="inline inline--bg-light"
+            disabled={draft.discarding}
+            onclick={() => discardDraft(draft.key)}
+          >
+            Discard
           </button>
           {#if draft.error}
-            <button type="button" class="small" disabled={draft.discarding} onclick={retryDraftSave}>
-              Retry saving draft
+            <button type="button" class="inline inline--bg-light" disabled={draft.discarding} onclick={retryDraftSave}>
+              Retry
             </button>
           {/if}
         </div>
@@ -171,7 +179,9 @@
     display: block;
   }
   .root input {
-    margin-inline: 0 4px;
+    margin-inline: 0 4px 0;
+    width: 1.1rem;
+    height: 1.1rem;
   }
   .comment,
   .reply-text {
@@ -185,6 +195,8 @@
   }
   .reply-text {
     white-space: pre-wrap;
+    margin-block-end: 2rem !important;
+    font-style: italic;
   }
   .inline {
     min-block-size: 0;
@@ -192,27 +204,46 @@
     padding: 0;
     border: 0;
     background: none;
-    color: var(--accent);
-    font: inherit;
-    font-size: 13px;
+    padding: 3px 6px 4px;
+    border-radius: 3px;
+    background: var(--ink);
+    color: #fff;
     font-weight: 700;
-    text-decoration: underline;
     cursor: pointer;
+    text-box-trim: trim-both;
+    text-box-edge: cap alphabetic;
+
+    &.inline--bg-light {
+      background: #fff;
+      color: var(--ink);
+    }
   }
+
   .inline::after {
     display: none;
   }
+
   .replies {
     padding-inline-start: 24px;
   }
   .replies li::before {
     content: '– ';
   }
-  .result,
-  .draft {
+  .result {
+    margin-block: 8px 0;
+    line-height: 1.2;
+
+    & + .result {
+      margin-block: 0 8px;
+    }
+  }
+
+  .result + .draft {
     margin-block: 8px;
-    margin-inline-start: 24px;
-    font-size: 14px;
+  }
+
+  .draft {
+    margin-block: 0 8px;
   }
   .result p,
   .draft p {
@@ -239,7 +270,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-block-start: 8px;
+    margin-block: 8px 2rem;
   }
   .small {
     min-block-size: 36px;

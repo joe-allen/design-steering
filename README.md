@@ -93,6 +93,8 @@ The desktop icon uses the bull from [ui-design/logo.svg](ui-design/logo.svg) on 
 
 OpenSpec validation checks specification structure and formatting; it does not verify that the application implements the spec. Tests check application behavior, but do not validate spec formatting. Run validation when editing specs, tests when changing code, and both when changing both. Add `--no-interactive` when running OpenSpec validation in scripts or CI.
 
+`npm install` also installs a pre-commit hook that formats and lints the staged files with `npx lint-staged`.
+
 ## Requirements
 
 - Node.js 22.9 or later (uses the built-in `--env-file-if-exists` and `fetch`).
@@ -165,3 +167,4 @@ Each `fetch` creates a run folder next to the scripts, named after the Figma pag
 - A run without `_frames/` (fetched with `--images=false`) is fine: every comment is listed under "General comments".
 - Rate limited (`429`): fetch waits and retries once. A push stops without automatically retrying; review and push the remaining actions later.
 - In the app, "Node 22.9 or later is required": install a current Node, then use **Detect** in Settings or restart the app. If Node is installed somewhere unusual, put its full path in the Node path field.
+- `npx: command not found` when committing: the Git client ran the pre-commit hook without Node on its `PATH`, which happens with some GUI clients and Node version managers. Commit from a terminal, or set `SIMPLE_GIT_HOOKS_RC` to a shell script that puts Node on the `PATH` (for example `export PATH="/usr/local/bin:$PATH"`, or `. "$HOME/.nvm/nvm.sh"`). The hook runs that script first, so the Git client must see the variable.

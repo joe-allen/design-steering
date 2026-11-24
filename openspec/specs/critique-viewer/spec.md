@@ -52,6 +52,11 @@ When a run finishes or is opened, the Comments screen SHALL show "New page", "Do
 - **WHEN** the critique is generated
 - **THEN** its Markdown has one checked item with a link to the root comment, and shows the replies beneath it without separate checkboxes
 
+#### Scenario: Resume tabbing after viewing a frame image
+- **GIVEN** the image viewer was opened from a frame image button
+- **WHEN** the viewer is dismissed
+- **THEN** focus returns to that button, even if opening it did not focus it, and Tab and Shift+Tab continue from there
+
 ### Requirement: Critique layout preference
 The viewer SHALL provide a layout toggle, defaulting to single column, and SHALL remember the selected layout across navigation, runs, and app restarts. Layout changes SHALL NOT modify saved markdown, downloads, or content sanitization. Preference read or write failures SHALL be reported without preventing the critique from being viewed.
 

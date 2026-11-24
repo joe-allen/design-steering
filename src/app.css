@@ -25,6 +25,12 @@ body {
   accent-color: var(--ink);
 }
 
+a {
+  color: var(--ink);
+  text-underline-offset: 0.3ex;
+  text-decoration-thickness: 0.2ex;
+}
+
 h1 {
   margin-block: 0 24px;
   margin-inline: 0;
@@ -50,7 +56,7 @@ h1 {
   overflow: auto;
   padding-block: 32px;
   padding-inline: 0;
-  scrollbar-width: none;
+  scrollbar-width: thin;
   scrollbar-color: var(--ink) var(--surface);
   scrollbar-gutter: both stable;
 }
@@ -162,4 +168,16 @@ button:hover::before {
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.text-sm {
+  font-size: 13px;
+}
+
+.lowercase {
+  text-transform: lowercase;
 }

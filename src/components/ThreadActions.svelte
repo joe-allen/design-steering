@@ -22,7 +22,9 @@
   const markLocked = $derived(
     thread.done || ['confirmed', 'alreadyDone', 'inFlight', 'uncertain'].includes(mark?.status),
   );
-  const editable = $derived(session.unlocked && !session.running && !session.review && !session.transitionBusy);
+  const editable = $derived(
+    session.unlocked && !session.running && !session.pendingCandidate && !session.review && !session.transitionBusy,
+  );
   const disabled = $derived(!editable || session.queueBusy || Boolean(session.actionsError));
   const href = $derived(threadLink(session.threadInfo.destination, session.threadInfo.fileKey, thread));
   const message = $derived(renderThreadText(thread.message, { runDir }, { root: true }));

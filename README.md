@@ -157,6 +157,7 @@ Each `fetch` creates a run folder next to the scripts, named after the Figma pag
 
 ## Troubleshooting
 
+- If the app offers **Save partial export** after a layer-read error, see [FAQ.md](FAQ.md) for what the report means and a non-destructive workaround.
 - `Missing Figma PAT` / `Missing page URL`: set them in `.env` or pass them as options.
 - `403`: check whether the token is invalid, expired, missing a scope, or belongs to an account without file access.
 - `404`: the file key is wrong or the token's account cannot open the file.

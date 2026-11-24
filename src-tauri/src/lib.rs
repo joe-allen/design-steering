@@ -5,10 +5,12 @@ mod runs;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static PENDING_RUN: Mutex<Option<runner::PendingRun<'static>>> = Mutex::new(None);
 
 fn runs_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app_data_dir(app).map(|dir| dir.join("runs"))
@@ -35,7 +37,7 @@ async fn start_run(
     app: AppHandle,
     settings: runner::RunSettings,
     on_event: Channel<runner::RunEvent>,
-) -> Result<String, String> {
+) -> Result<runner::RunOutcome, String> {
     let guard = runner::RunGuard::acquire(&RUNNING).ok_or("A run is already in progress.")?;
     let bundled = app
         .path()
@@ -43,12 +45,76 @@ async fn start_run(
         .map(|dir| dir.join("scripts"))
         .map_err(|error| error.to_string())?;
     let runs_dir = runs_dir(&app)?;
-    blocking(move || {
-        let _guard = guard;
+    let (execution, guard) = blocking(move || {
         let plan = runner::build_plan(&settings, &bundled, &runs_dir)?;
-        runner::execute_run(&plan, &settings, &|event| {
+        let execution = runner::execute_run(&plan, &settings, &|event| {
             let _ = on_event.send(event);
-        })
+        })?;
+        Ok((execution, guard))
+    })
+    .await?;
+    match execution {
+        runner::RunExecution::Completed { run_id } => {
+            drop(guard);
+            Ok(runner::RunOutcome::Completed { run_id })
+        }
+        runner::RunExecution::Pending(candidate) => {
+            let outcome = candidate.outcome();
+            let mut pending = match PENDING_RUN.lock() {
+                Ok(pending) => pending,
+                Err(_) => {
+                    candidate.discard()?;
+                    drop(guard);
+                    return Err("The pending export state is unavailable.".into());
+                }
+            };
+            if pending.is_some() {
+                drop(pending);
+                candidate.discard()?;
+                drop(guard);
+                return Err("A partial export is already awaiting a decision.".into());
+            }
+            *pending = Some(runner::PendingRun::new(candidate, guard));
+            Ok(outcome)
+        }
+    }
+}
+
+#[tauri::command]
+async fn save_partial_export(
+    candidate_id: String,
+    on_event: Channel<runner::RunEvent>,
+) -> Result<String, String> {
+    let pending = {
+        let mut state = PENDING_RUN
+            .lock()
+            .map_err(|_| "The pending export state is unavailable.".to_string())?;
+        runner::take_pending(&mut state, &candidate_id)?
+    };
+    blocking(move || {
+        let (candidate, guard) = pending.into_parts();
+        let result = candidate.save(&|event| {
+            let _ = on_event.send(event);
+        });
+        drop(guard);
+        result
+    })
+    .await
+}
+
+#[tauri::command]
+async fn discard_partial_export(candidate_id: String) -> Result<(), String> {
+    let pending = {
+        let mut state = PENDING_RUN
+            .lock()
+            .map_err(|_| "The pending export state is unavailable.".to_string())?;
+        runner::take_pending(&mut state, &candidate_id)?
+    };
+    blocking(move || {
+        let (candidate, guard) = pending.into_parts();
+        let result = candidate.discard();
+        drop(guard);
+        result
     })
     .await
 }
@@ -217,12 +283,19 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .setup(|app| {
+            let app_data = app.path().app_data_dir()?;
+            runner::cleanup_abandoned_staging(&app_data).map_err(std::io::Error::other)?;
+            Ok(())
+        })
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             detect_node,
             start_run,
+            save_partial_export,
+            discard_partial_export,
             push_run,
             list_runs,
             read_run,

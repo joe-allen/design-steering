@@ -1,12 +1,14 @@
 use crate::node::{self, hide_window};
 use crate::outbox::{self, ActionStatus, AppLock};
 use crate::runs;
+use crate::runs::PartialSummary;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const FETCH_SCRIPT: &str = "_1-fetch-figma-comments.mjs";
 const GENERATE_SCRIPT: &str = "_2-generate-design-critique.mjs";
@@ -49,6 +51,7 @@ pub struct RunPlan {
     pub node: PathBuf,
     pub scripts_dir: PathBuf,
     pub runs_dir: PathBuf,
+    pub staging_dir: PathBuf,
 }
 
 #[derive(Deserialize, Clone, Default)]
@@ -63,6 +66,102 @@ pub struct PushPlan {
     pub scripts_dir: PathBuf,
     pub runs_dir: PathBuf,
     pub app_data: PathBuf,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RunOutcome {
+    Completed {
+        run_id: String,
+    },
+    PartialCandidate {
+        candidate_id: String,
+        summary: PartialSummary,
+    },
+}
+
+pub enum RunExecution {
+    Completed { run_id: String },
+    Pending(Box<StagedCandidate>),
+}
+
+pub struct StagedCandidate {
+    candidate_id: String,
+    stage_root: PathBuf,
+    staged_run_dir: PathBuf,
+    staged_id: String,
+    plan: RunPlan,
+    source: runs::RunSource,
+    summary: PartialSummary,
+    user: bool,
+}
+
+pub struct PendingRun<'a> {
+    candidate: StagedCandidate,
+    guard: RunGuard<'a>,
+}
+
+impl<'a> PendingRun<'a> {
+    pub fn new(candidate: StagedCandidate, guard: RunGuard<'a>) -> Self {
+        Self { candidate, guard }
+    }
+
+    pub fn into_parts(self) -> (StagedCandidate, RunGuard<'a>) {
+        (self.candidate, self.guard)
+    }
+}
+
+pub fn take_pending<'a>(
+    state: &mut Option<PendingRun<'a>>,
+    candidate_id: &str,
+) -> Result<PendingRun<'a>, String> {
+    if !state
+        .as_ref()
+        .is_some_and(|pending| pending.candidate.matches_id(candidate_id))
+    {
+        return Err("The partial export is no longer available.".into());
+    }
+    state
+        .take()
+        .ok_or("The partial export is no longer available.".into())
+}
+
+impl StagedCandidate {
+    pub fn matches_id(&self, candidate_id: &str) -> bool {
+        self.candidate_id == candidate_id
+    }
+
+    pub fn outcome(&self) -> RunOutcome {
+        RunOutcome::PartialCandidate {
+            candidate_id: self.candidate_id.clone(),
+            summary: self.summary.clone(),
+        }
+    }
+
+    pub fn save(self, emit: &(dyn Fn(RunEvent) + Send + Sync)) -> Result<String, String> {
+        let result = publish_and_generate(
+            &self.plan,
+            &self.stage_root,
+            &self.staged_run_dir,
+            &self.staged_id,
+            &self.source,
+            self.user,
+            emit,
+        );
+        match (result, cleanup_stage(&self.stage_root)) {
+            (Ok(id), Ok(())) => Ok(id),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(cleanup_error)) => Err(format!("{error}\n{cleanup_error}")),
+        }
+    }
+
+    pub fn discard(self) -> Result<(), String> {
+        cleanup_stage(&self.stage_root)
+    }
 }
 
 /// Allows one run at a time; releases on drop.
@@ -200,15 +299,139 @@ fn run_script(
     })
 }
 
-/// Fetches the comments, then generates the markdown for the folder fetch reported.
-/// Returns the run folder name. A failed fetch never starts generate.
+static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn candidate_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "partial-{timestamp}-{}",
+        CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn cleanup_stage(stage_root: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(stage_root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not clean up the staged candidate: {error}")),
+    }
+}
+
+pub fn cleanup_abandoned_staging(app_data: &Path) -> Result<(), String> {
+    let staging = app_data.join("partial-staging");
+    match std::fs::remove_dir_all(staging) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Could not remove abandoned staged candidates: {error}"
+        )),
+    }
+}
+
+fn read_partial_report(run_dir: &Path) -> Result<Option<PartialSummary>, String> {
+    let Some(report) = runs::read_partial_report(run_dir)? else {
+        return Ok(None);
+    };
+    Ok(Some(PartialSummary {
+        confirmed_threads: report.confirmed_threads,
+        unreadable: report.unreadable,
+        unexamined: report.unexamined,
+    }))
+}
+
+fn reserve_run_dir(runs_dir: &Path, base: &str) -> Result<(String, PathBuf), String> {
+    for suffix in 0u64.. {
+        let id = if suffix == 0 {
+            format!("{base}-design-critique")
+        } else {
+            format!("{base}-design-critique-{suffix}")
+        };
+        let dir = runs_dir.join(&id);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok((id, dir)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not create run folder {}: {error}",
+                    dir.display()
+                ))
+            }
+        }
+    }
+    unreachable!("the u64 suffix space is finite")
+}
+
+fn publish_and_generate(
+    plan: &RunPlan,
+    stage_root: &Path,
+    staged_run_dir: &Path,
+    staged_id: &str,
+    source: &runs::RunSource,
+    user: bool,
+    emit: &(dyn Fn(RunEvent) + Send + Sync),
+) -> Result<String, String> {
+    let base = runs::parse_run_folder(staged_id)
+        .ok_or("The fetch script reported an unexpected run folder.")?;
+    let (id, run_dir) = reserve_run_dir(&plan.runs_dir, base)?;
+    let suffix = id
+        .strip_prefix(&format!("{base}-design-critique"))
+        .expect("reserved run id uses the staged basename");
+    let source_json = staged_run_dir.join(format!("{base}-figma-comments.json"));
+    let target_json = staged_run_dir.join(format!("{base}-figma-comments{suffix}.json"));
+    let result = (|| {
+        if !source_json.is_file() {
+            return Err("The fetch script did not create its comments snapshot.".into());
+        }
+        if source_json != target_json {
+            std::fs::rename(&source_json, &target_json)
+                .map_err(|error| format!("Could not name the comments snapshot: {error}"))?;
+        }
+        let stage_parent = dunce::canonicalize(stage_root).map_err(|error| error.to_string())?;
+        let staged = dunce::canonicalize(staged_run_dir)
+            .map_err(|error| format!("Could not resolve the staged run: {error}"))?;
+        if staged.parent() != Some(stage_parent.as_path()) {
+            return Err(
+                "The fetch script reported a run folder outside its private staging area.".into(),
+            );
+        }
+        for entry in std::fs::read_dir(&staged).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            std::fs::rename(entry.path(), run_dir.join(entry.file_name()))
+                .map_err(|error| format!("Could not publish the staged run: {error}"))?;
+        }
+        runs::write_source(&run_dir, source)?;
+        emit(RunEvent::Step {
+            step: "generate".into(),
+        });
+        let generate_args = vec![
+            plan.scripts_dir.join(GENERATE_SCRIPT).display().to_string(),
+            run_dir.display().to_string(),
+            format!("--user={user}"),
+        ];
+        run_script(&plan.node, &generate_args, None, "", emit)?;
+        Ok(id.clone())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&run_dir);
+    }
+    result
+}
+
+/// Fetches to private staging, then either returns a pending candidate or publishes a complete run.
 pub fn execute_run(
     plan: &RunPlan,
     settings: &RunSettings,
     emit: &(dyn Fn(RunEvent) + Send + Sync),
-) -> Result<String, String> {
+) -> Result<RunExecution, String> {
     let script = |name: &str| plan.scripts_dir.join(name).display().to_string();
     let token = settings.token.trim();
+    let candidate_id = candidate_id();
+    let stage_root = plan.staging_dir.join(&candidate_id);
+    std::fs::create_dir_all(&stage_root)
+        .map_err(|error| format!("Could not create private staging: {error}"))?;
 
     emit(RunEvent::Step {
         step: "fetch".into(),
@@ -217,46 +440,103 @@ pub fn execute_run(
         script(FETCH_SCRIPT),
         settings.page_url.trim().to_string(),
         format!("--images={}", settings.images),
-        format!("--out={}", plan.runs_dir.display()),
+        format!("--out={}", stage_root.display()),
         "--print-run-dir".to_string(),
+        "--desktop-partial".to_string(),
     ];
     if !settings.run_name.trim().is_empty() {
         fetch_args.push(format!("--name={}", settings.run_name.trim()));
     }
-    let stdout = run_script(&plan.node, &fetch_args, Some(token), token, emit)?;
+    let stdout = match run_script(&plan.node, &fetch_args, Some(token), token, emit) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            cleanup_stage(&stage_root)?;
+            return Err(error);
+        }
+    };
 
-    let reported = stdout
-        .iter()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| PathBuf::from(line.trim()))
-        .ok_or("The fetch script did not report a run folder.")?;
-    let id = reported
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .ok_or("The fetch script reported an unexpected run folder.")?;
-    let run_dir = runs::resolve_run(&plan.runs_dir, &id).map_err(|_| {
-        "The fetch script reported a run folder outside the runs folder.".to_string()
-    })?;
-    runs::write_source(
-        &run_dir,
+    let resolved = (|| {
+        let reported = stdout
+            .iter()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .ok_or("The fetch script did not report a run folder.")?;
+        let staged_id = reported
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .ok_or("The fetch script reported an unexpected run folder.")?;
+        let stage_root_canonical =
+            dunce::canonicalize(&stage_root).map_err(|error| error.to_string())?;
+        let staged_run_dir = dunce::canonicalize(&reported).map_err(|error| {
+            format!("The fetch script reported a run folder that does not exist: {error}")
+        })?;
+        if staged_run_dir.parent() != Some(stage_root_canonical.as_path())
+            || runs::parse_run_folder(&staged_id).is_none()
+        {
+            return Err(
+                "The fetch script reported a run folder outside its private staging area.".into(),
+            );
+        }
+        Ok((staged_id, staged_run_dir))
+    })();
+    let (staged_id, staged_run_dir) = match resolved {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return match cleanup_stage(&stage_root) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(format!("{error}\n{cleanup_error}")),
+            };
+        }
+    };
+    let summary = match read_partial_report(&staged_run_dir) {
+        Ok(summary) => summary,
+        Err(error) => {
+            cleanup_stage(&stage_root)?;
+            return Err(error);
+        }
+    };
+    if let Some(summary) = summary {
+        return Ok(RunExecution::Pending(Box::new(StagedCandidate {
+            candidate_id,
+            stage_root,
+            staged_run_dir,
+            staged_id,
+            plan: RunPlan {
+                node: plan.node.clone(),
+                scripts_dir: plan.scripts_dir.clone(),
+                runs_dir: plan.runs_dir.clone(),
+                staging_dir: plan.staging_dir.clone(),
+            },
+            source: runs::RunSource {
+                page_url: settings.page_url.trim().to_string(),
+                run_name: settings.run_name.trim().to_string(),
+            },
+            summary,
+            user: settings.user,
+        })));
+    }
+    let id = match publish_and_generate(
+        plan,
+        &stage_root,
+        &staged_run_dir,
+        &staged_id,
         &runs::RunSource {
             page_url: settings.page_url.trim().to_string(),
             run_name: settings.run_name.trim().to_string(),
         },
-    )?;
-
-    emit(RunEvent::Step {
-        step: "generate".into(),
-    });
-    let generate_args = vec![
-        script(GENERATE_SCRIPT),
-        run_dir.display().to_string(),
-        format!("--user={}", settings.user),
-    ];
-    run_script(&plan.node, &generate_args, None, token, emit)?;
-    Ok(id)
+        settings.user,
+        emit,
+    ) {
+        Ok(id) => id,
+        Err(error) => {
+            cleanup_stage(&stage_root)?;
+            return Err(error);
+        }
+    };
+    cleanup_stage(&stage_root)?;
+    Ok(RunExecution::Completed { run_id: id })
 }
 
 fn select_scripts_dir(bundled: &Path, development: Option<&Path>) -> Result<PathBuf, String> {
@@ -296,10 +576,17 @@ pub fn build_plan(
     let node = node::detect(Some(settings.node_path.as_str()))?;
     std::fs::create_dir_all(runs_dir)
         .map_err(|error| format!("Could not create the runs folder: {error}"))?;
+    let staging_dir = runs_dir
+        .parent()
+        .unwrap_or(runs_dir)
+        .join("partial-staging");
+    std::fs::create_dir_all(&staging_dir)
+        .map_err(|error| format!("Could not create private staging: {error}"))?;
     Ok(RunPlan {
         node: PathBuf::from(node.path),
         scripts_dir: scripts_dir(bundled_scripts)?,
         runs_dir: dunce::canonicalize(runs_dir).map_err(|error| error.to_string())?,
+        staging_dir: dunce::canonicalize(staging_dir).map_err(|error| error.to_string())?,
     })
 }
 
@@ -605,6 +892,16 @@ const dir = join(out, 'stub-design-critique');
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(dir, 'argv.json'), JSON.stringify(process.argv));
 writeFileSync(join(dir, 'env-token.txt'), process.env.FIGMA_TOKEN ?? '');
+writeFileSync(join(dir, 'stub-figma-comments.json'), '[]');
+    if (process.argv[2].includes('partial')) {
+      writeFileSync(join(dir, 'partial-report.json'), JSON.stringify({
+        version: 1,
+        confirmed_threads: 2,
+        recovery_requests: 4,
+        unreadable: [{ id: 'node-bad', path: [{ id: 'node-bad', name: 'Unreadable layer' }] }],
+        unexamined: []
+      }));
+    }
 if (process.argv[2].includes('blockrecord')) mkdirSync(join(dir, 'source.json'));
 if (process.argv[2].includes('fail')) {
   console.error('Figma returned 403: the token is invalid, expired, or missing a required scope.');
@@ -631,12 +928,22 @@ console.log('Wrote it');
         fs::write(scripts.join(GENERATE_SCRIPT), GENERATE_STUB).unwrap();
         let runs_dir = root.join("runs");
         fs::create_dir_all(&runs_dir).unwrap();
+        let staging_dir = root.join("partial-staging");
+        fs::create_dir_all(&staging_dir).unwrap();
         let plan = RunPlan {
             node: PathBuf::from("node"),
             scripts_dir: scripts,
             runs_dir: dunce::canonicalize(runs_dir).unwrap(),
+            staging_dir,
         };
         (plan, root)
+    }
+
+    fn run_completed(plan: &RunPlan, settings: &RunSettings) -> String {
+        match execute_run(plan, settings, &|_| {}).unwrap() {
+            RunExecution::Completed { run_id } => run_id,
+            RunExecution::Pending(_) => panic!("expected a complete run"),
+        }
     }
 
     fn settings(url: &str) -> RunSettings {
@@ -655,6 +962,37 @@ console.log('Wrote it');
         );
         assert_eq!(redact("nothing here", TOKEN), "nothing here");
         assert_eq!(redact("keep", ""), "keep");
+    }
+
+    #[test]
+    fn run_outcomes_use_the_frontend_camel_case_contract() {
+        assert_eq!(
+            serde_json::to_value(RunOutcome::Completed {
+                run_id: "home-design-critique".into(),
+            })
+            .unwrap(),
+            json!({"kind": "completed", "runId": "home-design-critique"})
+        );
+        assert_eq!(
+            serde_json::to_value(RunOutcome::PartialCandidate {
+                candidate_id: "candidate-1".into(),
+                summary: PartialSummary {
+                    confirmed_threads: 2,
+                    unreadable: vec![],
+                    unexamined: vec![],
+                },
+            })
+            .unwrap(),
+            json!({
+                "kind": "partialCandidate",
+                "candidateId": "candidate-1",
+                "summary": {
+                    "confirmedThreads": 2,
+                    "unreadable": [],
+                    "unexamined": [],
+                },
+            })
+        );
     }
 
     #[test]
@@ -726,7 +1064,10 @@ console.log('Wrote it');
         let events = Mutex::new(Vec::new());
         let emit = |event: RunEvent| events.lock().unwrap().push(event);
 
-        let id = execute_run(&plan, &settings("https://figma.test/ok"), &emit).unwrap();
+        let id = match execute_run(&plan, &settings("https://figma.test/ok"), &emit).unwrap() {
+            RunExecution::Completed { run_id } => run_id,
+            RunExecution::Pending(_) => panic!("expected a complete run"),
+        };
         assert_eq!(id, "stub-design-critique");
 
         let run_dir = plan.runs_dir.join(&id);
@@ -738,6 +1079,7 @@ console.log('Wrote it');
         let argv = fs::read_to_string(run_dir.join("argv.json")).unwrap();
         assert!(!argv.contains(TOKEN), "token must not be in argv: {argv}");
         assert!(argv.contains("--print-run-dir") && argv.contains("--images=true"));
+        assert!(argv.contains("--desktop-partial"));
         let md = fs::read_to_string(run_dir.join("stub-design-critique.md")).unwrap();
         assert!(md.contains("--user=false"));
 
@@ -759,6 +1101,229 @@ console.log('Wrote it');
     }
 
     #[test]
+    fn pending_partial_candidate_is_hidden_until_saved_and_generates_without_refetching() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let (plan, root) = plan("partial-pending");
+        let events = Mutex::new(Vec::new());
+        let emit = |event: RunEvent| events.lock().unwrap().push(event);
+        let candidate =
+            match execute_run(&plan, &settings("https://figma.test/partial"), &emit).unwrap() {
+                RunExecution::Pending(candidate) => candidate,
+                RunExecution::Completed { .. } => panic!("expected a pending partial candidate"),
+            };
+        let outcome = candidate.outcome();
+        let RunOutcome::PartialCandidate {
+            candidate_id,
+            summary,
+        } = outcome
+        else {
+            panic!("expected partial outcome");
+        };
+        assert_eq!(summary.confirmed_threads, 2);
+        assert_eq!(summary.unreadable[0].id, "node-bad");
+        assert!(runs::list_runs_in(&plan.runs_dir).is_empty());
+        assert!(candidate
+            .staged_run_dir
+            .join("partial-report.json")
+            .is_file());
+        assert!(!candidate.staged_run_dir.join(runs::SOURCE_FILE).exists());
+
+        let id = candidate.save(&emit).unwrap();
+        assert_eq!(id, "stub-design-critique");
+        assert_eq!(runs::list_runs_in(&plan.runs_dir).len(), 1);
+        let run_dir = plan.runs_dir.join(&id);
+        assert!(run_dir.join(format!("{id}.md")).is_file());
+        assert!(run_dir.join("stub-figma-comments.json").is_file());
+        let source = runs::read_run_in(&plan.runs_dir, &id)
+            .unwrap()
+            .source
+            .unwrap();
+        assert_eq!(source.page_url, "https://figma.test/partial");
+        assert!(!candidate_id.is_empty());
+        assert!(!plan.staging_dir.join(candidate_id).exists());
+
+        let event_list = events.into_inner().unwrap();
+        let steps: Vec<&str> = event_list
+            .iter()
+            .filter_map(|event| match event {
+                RunEvent::Step { step } => Some(step.as_str()),
+                RunEvent::Log { .. } => None,
+            })
+            .collect();
+        assert_eq!(steps, ["fetch", "generate"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_decisions_reject_invalid_and_repeated_ids_while_holding_the_run_guard() {
+        let flag = AtomicBool::new(false);
+        let guard = RunGuard::acquire(&flag).unwrap();
+        let plan = RunPlan {
+            node: PathBuf::from("node"),
+            scripts_dir: PathBuf::new(),
+            runs_dir: PathBuf::new(),
+            staging_dir: PathBuf::new(),
+        };
+        let candidate = StagedCandidate {
+            candidate_id: "partial-test-id".into(),
+            stage_root: PathBuf::new(),
+            staged_run_dir: PathBuf::new(),
+            staged_id: "stub-design-critique".into(),
+            plan,
+            source: runs::RunSource {
+                page_url: "https://figma.test/page".into(),
+                run_name: String::new(),
+            },
+            summary: PartialSummary {
+                confirmed_threads: 1,
+                unreadable: Vec::new(),
+                unexamined: vec![],
+            },
+            user: false,
+        };
+        let mut state = Some(PendingRun::new(candidate, guard));
+
+        assert!(take_pending(&mut state, "invalid-id").is_err());
+        assert!(
+            state.is_some(),
+            "an invalid decision must not consume the candidate"
+        );
+        let pending = take_pending(&mut state, "partial-test-id").unwrap();
+        assert!(state.is_none());
+        assert!(RunGuard::acquire(&flag).is_none());
+        assert!(
+            take_pending(&mut state, "partial-test-id").is_err(),
+            "a stale repeated decision must fail"
+        );
+        drop(pending);
+        assert!(RunGuard::acquire(&flag).is_some());
+    }
+
+    #[test]
+    fn discarding_a_candidate_keeps_existing_runs_and_outboxes_untouched() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let (plan, root) = plan("partial-discard");
+        let existing = plan.runs_dir.join("older-design-critique");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("older-design-critique.md"), "# Older").unwrap();
+        fs::write(existing.join("outbox.json"), "{\"private\":true}").unwrap();
+        let candidate =
+            match execute_run(&plan, &settings("https://figma.test/partial"), &|_| {}).unwrap() {
+                RunExecution::Pending(candidate) => candidate,
+                RunExecution::Completed { .. } => panic!("expected a pending candidate"),
+            };
+        let stage_root = candidate.stage_root.clone();
+        candidate.discard().unwrap();
+        assert!(!stage_root.exists());
+        assert_eq!(runs::list_runs_in(&plan.runs_dir).len(), 1);
+        assert_eq!(
+            fs::read_to_string(existing.join("outbox.json")).unwrap(),
+            "{\"private\":true}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn abandoned_staging_cleanup_does_not_touch_published_runs() {
+        let root = temp_dir("abandoned-staging");
+        let app_data = root.join("app-data");
+        let staging = app_data.join("partial-staging/candidate-abandoned");
+        let runs_dir = app_data.join("runs/older-design-critique");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&runs_dir).unwrap();
+        fs::write(staging.join("snapshot.json"), "private").unwrap();
+        fs::write(runs_dir.join("outbox.json"), "private outbox").unwrap();
+        fs::write(runs_dir.join("older-design-critique.md"), "# Older").unwrap();
+
+        cleanup_abandoned_staging(&app_data).unwrap();
+        assert!(!app_data.join("partial-staging").exists());
+        assert_eq!(
+            fs::read_to_string(runs_dir.join("outbox.json")).unwrap(),
+            "private outbox"
+        );
+        assert!(runs_dir.join("older-design-critique.md").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_uses_a_free_folder_suffix_and_preserves_the_older_run_and_outbox() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let (plan, root) = plan("partial-collision");
+        let older = plan.runs_dir.join("stub-design-critique");
+        fs::create_dir_all(&older).unwrap();
+        fs::write(older.join("stub-design-critique.md"), "# Older").unwrap();
+        fs::write(older.join("stub-figma-comments.json"), "older comments").unwrap();
+        fs::write(older.join("outbox.json"), "older outbox").unwrap();
+        let candidate =
+            match execute_run(&plan, &settings("https://figma.test/partial"), &|_| {}).unwrap() {
+                RunExecution::Pending(candidate) => candidate,
+                RunExecution::Completed { .. } => panic!("expected a pending candidate"),
+            };
+
+        let id = candidate.save(&|_| {}).unwrap();
+        assert_eq!(id, "stub-design-critique-1");
+        assert!(plan.runs_dir.join(&id).join(format!("{id}.md")).is_file());
+        assert!(plan
+            .runs_dir
+            .join(&id)
+            .join("stub-figma-comments-1.json")
+            .is_file());
+        assert_eq!(
+            fs::read_to_string(older.join("stub-design-critique.md")).unwrap(),
+            "# Older"
+        );
+        assert_eq!(
+            fs::read_to_string(older.join("outbox.json")).unwrap(),
+            "older outbox"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generation_failure_cleans_the_candidate_without_altering_an_older_run() {
+        if !node_available() {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        let (plan, root) = plan("partial-generation-failure");
+        let older = plan.runs_dir.join("older-design-critique");
+        fs::create_dir_all(&older).unwrap();
+        fs::write(older.join("older-design-critique.md"), "# Older").unwrap();
+        fs::write(older.join("outbox.json"), "older outbox").unwrap();
+        fs::write(
+            plan.scripts_dir.join(GENERATE_SCRIPT),
+            "console.error('generation failed'); process.exit(1);",
+        )
+        .unwrap();
+        let candidate =
+            match execute_run(&plan, &settings("https://figma.test/partial"), &|_| {}).unwrap() {
+                RunExecution::Pending(candidate) => candidate,
+                RunExecution::Completed { .. } => panic!("expected a pending candidate"),
+            };
+        let stage_root = candidate.stage_root.clone();
+        let error = candidate
+            .save(&|_| {})
+            .expect_err("generation failure should fail saving");
+        assert!(error.contains("generation failed"), "{error}");
+        assert!(!stage_root.exists());
+        assert_eq!(runs::list_runs_in(&plan.runs_dir).len(), 1);
+        assert_eq!(
+            fs::read_to_string(older.join("outbox.json")).unwrap(),
+            "older outbox"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_run_records_its_page_and_trimmed_name_but_never_the_token() {
         if !node_available() {
             eprintln!("skipped: node is not installed");
@@ -769,7 +1334,7 @@ console.log('Wrote it');
             run_name: "  checkout ".into(),
             ..settings("  https://figma.test/ok?node-id=1-1 ")
         };
-        let id = execute_run(&plan, &run_settings, &|_| {}).unwrap();
+        let id = run_completed(&plan, &run_settings);
         let record = fs::read_to_string(plan.runs_dir.join(&id).join(runs::SOURCE_FILE)).unwrap();
         assert!(!record.contains(TOKEN), "{record}");
         let content = runs::read_run_in(&plan.runs_dir, &id).unwrap();
@@ -790,7 +1355,7 @@ console.log('Wrote it');
             return;
         }
         let (plan, root) = plan("record-noname");
-        let id = execute_run(&plan, &settings("https://figma.test/ok"), &|_| {}).unwrap();
+        let id = run_completed(&plan, &settings("https://figma.test/ok"));
         assert_eq!(
             runs::read_run_in(&plan.runs_dir, &id)
                 .unwrap()
@@ -809,8 +1374,10 @@ console.log('Wrote it');
             return;
         }
         let (plan, root) = plan("record-fail");
-        let error =
-            execute_run(&plan, &settings("https://figma.test/blockrecord"), &|_| {}).unwrap_err();
+        let error = match execute_run(&plan, &settings("https://figma.test/blockrecord"), &|_| {}) {
+            Err(error) => error,
+            Ok(_) => panic!("record failure should fail the run"),
+        };
         assert!(error.contains("Could not record the page"), "{error}");
         assert!(!plan
             .runs_dir
@@ -846,7 +1413,10 @@ console.log('Wrote it');
             return;
         }
         let (plan, root) = plan("fail");
-        let error = execute_run(&plan, &settings("https://figma.test/fail"), &|_| {}).unwrap_err();
+        let error = match execute_run(&plan, &settings("https://figma.test/fail"), &|_| {}) {
+            Err(error) => error,
+            Ok(_) => panic!("fetch failure should fail the run"),
+        };
         assert!(error.contains("Figma returned 403"), "{error}");
         assert!(!plan
             .runs_dir
@@ -1080,16 +1650,24 @@ process.exit(1);
         let fetch_script = url(&repo.join(FETCH_SCRIPT));
         let generate_script = url(&repo.join(GENERATE_SCRIPT));
         let fetch_log = root.join("fetch-requests.jsonl");
+        let repair_flag = root.join("partial-layer-repaired");
         let wrapper = format!(
-            "import {{ appendFileSync }} from 'node:fs';\n\
+            "import {{ appendFileSync, existsSync }} from 'node:fs';\n\
              await import({});\n\
              const offlineFetch = globalThis.fetch;\n\
              globalThis.fetch = (input, options = {{}}) => {{\n\
-               appendFileSync({}, JSON.stringify({{url: String(input), method: options.method ?? 'GET'}}) + '\\n');\n\
-               return offlineFetch(input, options);\n\
+               let target = input;\n\
+               if (existsSync({})) {{\n\
+                 const parsed = new URL(input);\n\
+                 parsed.pathname = parsed.pathname.replace('/files/PARTIAL/', '/files/KEY/');\n\
+                 target = parsed;\n\
+               }}\n\
+               appendFileSync({}, JSON.stringify({{url: String(target), method: options.method ?? 'GET'}}) + '\\n');\n\
+               return offlineFetch(target, options);\n\
              }};\n\
              await import({});\n",
             serde_json::to_string(&fetch_stub).unwrap(),
+            serde_json::to_string(&repair_flag.to_string_lossy()).unwrap(),
             serde_json::to_string(&fetch_log.to_string_lossy()).unwrap(),
             serde_json::to_string(&fetch_script).unwrap()
         );
@@ -1106,6 +1684,7 @@ process.exit(1);
             node: PathBuf::from("node"),
             scripts_dir: scripts_dir.clone(),
             runs_dir: runs_dir.clone(),
+            staging_dir: app_data.join("partial-staging"),
         };
         let settings = RunSettings {
             token: TOKEN.into(),
@@ -1113,7 +1692,7 @@ process.exit(1);
             images: false,
             ..RunSettings::default()
         };
-        let first = execute_run(&plan, &settings, &|_| {}).unwrap();
+        let first = run_completed(&plan, &settings);
         assert_eq!(first, "checkout-design-critique");
         let original_markdown =
             fs::read(runs_dir.join(&first).join(format!("{first}.md"))).unwrap();
@@ -1149,7 +1728,7 @@ process.exit(1);
             original_markdown
         );
 
-        let synced = execute_run(&plan, &settings, &|_| {}).unwrap();
+        let synced = run_completed(&plan, &settings);
         assert_eq!(synced, "checkout-design-critique-1");
         assert!(outbox::read(&runs_dir, &synced).unwrap().actions.is_empty());
         assert_eq!(
@@ -1192,6 +1771,78 @@ process.exit(1);
         assert!(copy.is_dir());
         outbox::with_lock(&app_data, || runs::delete_all_runs_in(&runs_dir)).unwrap();
         assert!(!runs_dir.join(&synced).exists());
+
+        let partial_settings = RunSettings {
+            page_url: "https://www.figma.com/design/PARTIAL/checkout?node-id=1-1".into(),
+            run_name: "partial-export".into(),
+            images: false,
+            ..settings.clone()
+        };
+        let discarded = match execute_run(&plan, &partial_settings, &|_| {}).unwrap() {
+            RunExecution::Pending(candidate) => candidate,
+            RunExecution::Completed { .. } => panic!("expected a partial candidate to discard"),
+        };
+        let discarded_stage = discarded.stage_root.clone();
+        discarded.discard().unwrap();
+        assert!(!discarded_stage.exists());
+        assert!(runs::list_runs_in(&runs_dir).is_empty());
+
+        let accepted = match execute_run(&plan, &partial_settings, &|_| {}).unwrap() {
+            RunExecution::Pending(candidate) => candidate,
+            RunExecution::Completed { .. } => panic!("expected a partial candidate to save"),
+        };
+        let partial_id = accepted.save(&|_| {}).unwrap();
+        assert_eq!(partial_id, "partial-export-design-critique");
+        let reopened = runs::read_run_in(&runs_dir, &partial_id).unwrap();
+        assert!(reopened.partial);
+        assert!(reopened.markdown.contains("## Partial export"));
+        assert!(reopened.markdown.contains("Unreadable branches"));
+        assert!(runs::list_runs_in(&runs_dir)[0].partial);
+
+        let partial_outbox = runs_dir.join(&partial_id).join("outbox.json");
+        fs::write(&partial_outbox, "{\"private\":true}").unwrap();
+        let partial_copy = runs::copy_run_to(&runs_dir, &partial_id, &downloads).unwrap();
+        assert!(partial_copy.join("partial-report.json").is_file());
+        assert!(
+            fs::read_to_string(partial_copy.join(format!("{partial_id}.md")))
+                .unwrap()
+                .contains("## Partial export")
+        );
+        assert!(!partial_copy.join("outbox.json").exists());
+        assert!(!partial_copy.join("partial-staging").exists());
+
+        fs::write(&repair_flag, "repaired").unwrap();
+        let repaired_id = run_completed(&plan, &partial_settings);
+        assert_eq!(repaired_id, "partial-export-design-critique-1");
+        let repaired = runs::read_run_in(&runs_dir, &repaired_id).unwrap();
+        assert!(!repaired.partial);
+        assert!(!repaired.markdown.contains("## Partial export"));
+        let summaries = runs::list_runs_in(&runs_dir);
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|run| (run.id.as_str(), run.partial))
+                .collect::<Vec<_>>(),
+            [
+                ("partial-export-design-critique-1", false),
+                ("partial-export-design-critique", true),
+            ]
+        );
+        assert!(runs::read_run_in(&runs_dir, &partial_id)
+            .unwrap()
+            .markdown
+            .contains("## Partial export"));
+        let push_requests = fs::read_to_string(root.join("requests.jsonl")).unwrap();
+        assert_eq!(push_requests.matches("\"method\":\"POST\"").count(), 1);
+        let fetch_requests = fs::read_to_string(&fetch_log).unwrap();
+        assert!(fetch_requests.lines().all(|line| {
+            let request: serde_json::Value = serde_json::from_str(line).unwrap();
+            request["method"] == "GET"
+                && request["url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("https://api.figma.com/"))
+        }));
         let _ = fs::remove_dir_all(root);
     }
 }

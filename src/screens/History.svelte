@@ -69,7 +69,7 @@
         <button
           type="button"
           class="remove-all"
-          disabled={session.running || session.queueBusy}
+          disabled={session.running || session.queueBusy || Boolean(session.pendingCandidate)}
           onclick={() => (confirming = { all: true })}
         >
           Remove all
@@ -82,13 +82,16 @@
           {#each visible as run (run.id)}
             {@const label = `${formatDate(run.modifiedMs)} - ${run.name}`}
             <li>
-              <button type="button" class="open" onclick={() => openRun(run.id)}>{label}</button>
+              <button type="button" class="open" onclick={() => openRun(run.id)}>
+                {label}{#if run.partial}
+                  <span class="partial-label">Partial export</span>{/if}
+              </button>
               <button
                 type="button"
                 class="remove"
                 aria-label={`Remove ${label}`}
                 title="Remove"
-                disabled={session.running || session.queueBusy}
+                disabled={session.running || session.queueBusy || Boolean(session.pendingCandidate)}
                 onclick={() => (confirming = { id: run.id, label })}
               >
                 Remove
@@ -194,6 +197,16 @@
     font-size: 14px;
     text-align: start;
     cursor: pointer;
+  }
+
+  .partial-label {
+    display: inline-block;
+    margin-inline-start: 8px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: var(--surface-item);
+    font-size: 11px;
+    font-weight: 700;
   }
 
   .note {

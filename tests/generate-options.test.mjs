@@ -125,3 +125,46 @@ test('a run folder without title.txt keeps the "Design critique" heading', () =>
   assert.equal(result.status, 0, result.stderr);
   assert.match(readFileSync(join(dir, 'home-design-critique.md'), 'utf8'), /^# Design critique\n/);
 });
+
+test('partial warning survives generation with or without images and renders layer names as text', () => {
+  for (const frames of [false, true]) {
+    const dir = makeRun(tempDir(), `partial-${frames ? 'image' : 'no-image'}-design-critique`, { frames });
+    writeFileSync(
+      join(dir, 'partial-report.json'),
+      JSON.stringify({
+        version: 1,
+        confirmed_threads: 2,
+        recovery_requests: 4,
+        unreadable: [
+          {
+            id: 'bad-node',
+            path: [
+              { id: 'parent', name: 'Group' },
+              { id: 'bad-node', name: '<img src=x onerror=alert(1)> ` layer' },
+            ],
+          },
+        ],
+        unexamined: [{ id: 'unknown-node', path: [{ id: 'unknown-node', name: 'Not checked' }] }],
+      }),
+    );
+    const result = run(script, [dir]);
+    assert.equal(result.status, 0, result.stderr);
+    const markdown = readFileSync(join(dir, `${dir.split('/').at(-1)}.md`), 'utf8');
+    assert.match(markdown, /## Partial export/);
+    assert.match(markdown, /confirmed 2 threads/);
+    assert.match(markdown, /Additional comments may be missing/);
+    assert.match(markdown, /Unreadable branches/);
+    assert.match(markdown, /Not examined/);
+    assert.ok(markdown.includes('``<img src=x onerror=alert(1)> ` layer``'));
+    if (frames) assert.match(markdown, /<img src="\.\/_frames\/1-frame-a\.png"/);
+    else assert.match(markdown, /## General comments/);
+  }
+});
+
+test('a malformed partial report fails generation instead of being treated as complete', () => {
+  const dir = makeRun(tempDir(), 'invalid-partial-design-critique');
+  writeFileSync(join(dir, 'partial-report.json'), '{"version":99}');
+  const result = run(script, [dir]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /partial report.*unsupported or inconsistent/i);
+});

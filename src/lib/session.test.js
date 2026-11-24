@@ -8,6 +8,8 @@ vi.mock('@tauri-apps/plugin-store', async () => {
 vi.mock('./api.js', () => ({
   detectNode: vi.fn(),
   startRun: vi.fn(),
+  savePartialExport: vi.fn(),
+  discardPartialExport: vi.fn(),
   listRuns: vi.fn(),
   readRun: vi.fn(),
   readThreads: vi.fn(),
@@ -30,6 +32,8 @@ const {
   initSession,
   getComments,
   syncRun,
+  savePartialExport,
+  discardPartialExport,
   startNewPage,
   backToComments,
   openRun,
@@ -46,7 +50,24 @@ const {
 
 const PAGE_A = 'https://www.figma.com/design/A/file?node-id=1-1';
 const PAGE_B = 'https://www.figma.com/design/B/file?node-id=2-2';
-const runFor = (id, source) => ({ id, dir: `/runs/${id}`, markdown: '# Design critique', source });
+const completed = (runId) => ({ kind: 'completed', runId });
+const partial = {
+  kind: 'partialCandidate',
+  candidateId: 'candidate-1',
+  summary: {
+    confirmedThreads: 2,
+    unreadable: [{ id: 'bad-layer', path: [{ id: 'bad-layer', name: 'Screenshot' }] }],
+    unexamined: [],
+  },
+};
+const runFor = (id, source) => ({
+  id,
+  dir: `/runs/${id}`,
+  markdown: '# Design critique',
+  source,
+  partial: false,
+  partialReport: null,
+});
 
 beforeEach(() => {
   disk.clear();
@@ -56,6 +77,7 @@ beforeEach(() => {
   Object.assign(session, {
     screen: 'comments',
     run: null,
+    pendingCandidate: null,
     newPage: false,
     draft: { pageUrl: '', runName: '' },
     running: false,
@@ -93,7 +115,7 @@ describe('starting a run from the form', () => {
 
   test('passes the entered page and trimmed name with the saved settings, and remembers the page', async () => {
     session.draft = { pageUrl: ` ${PAGE_A} `, runName: ' checkout ' };
-    api.startRun.mockResolvedValue('checkout-design-critique');
+    api.startRun.mockResolvedValue(completed('checkout-design-critique'));
     api.readRun.mockResolvedValue(runFor('checkout-design-critique', { pageUrl: PAGE_A, runName: 'checkout' }));
 
     await getComments();
@@ -107,6 +129,40 @@ describe('starting a run from the form', () => {
     expect(disk.get('pageUrl')).toBe(PAGE_A);
     expect(session.run.id).toBe('checkout-design-critique');
     expect(session.running).toBe(false);
+  });
+
+  test('Get comments can save a staged candidate and open its generated run', async () => {
+    session.draft = { pageUrl: PAGE_A, runName: 'home' };
+    api.startRun.mockResolvedValue(partial);
+    api.savePartialExport.mockResolvedValue('home-design-critique');
+    api.readRun.mockResolvedValue(runFor('home-design-critique', { pageUrl: PAGE_A, runName: 'home' }));
+    api.readThreads.mockResolvedValue({ threads: [] });
+    api.readOutbox.mockResolvedValue({ actions: [] });
+
+    await getComments();
+
+    expect(session.run).toBeNull();
+    expect(session.pendingCandidate).toEqual({ candidateId: 'candidate-1', summary: partial.summary });
+    expect(api.readRun).not.toHaveBeenCalled();
+    await savePartialExport();
+
+    expect(api.savePartialExport).toHaveBeenCalledWith('candidate-1', expect.any(Function));
+    expect(session.pendingCandidate).toBeNull();
+    expect(session.run.id).toBe('home-design-critique');
+  });
+
+  test('Discard after Get comments restores the form and keeps its input', async () => {
+    session.draft = { pageUrl: PAGE_A, runName: 'home' };
+    api.startRun.mockResolvedValue(partial);
+    api.discardPartialExport.mockResolvedValue(undefined);
+
+    await getComments();
+    await discardPartialExport();
+
+    expect(api.discardPartialExport).toHaveBeenCalledWith('candidate-1');
+    expect(session.pendingCandidate).toBeNull();
+    expect(session.run).toBeNull();
+    expect(session.draft).toEqual({ pageUrl: PAGE_A, runName: 'home' });
   });
 
   test('a missing URL is a field error and starts nothing', async () => {
@@ -146,7 +202,7 @@ describe('starting a run from the form', () => {
     expect(session.error).toBe('Figma returned 403');
     expect(session.run.id).toBe('old-design-critique');
 
-    api.startRun.mockResolvedValueOnce('new-design-critique');
+    api.startRun.mockResolvedValueOnce(completed('new-design-critique'));
     api.readRun.mockResolvedValueOnce(runFor('new-design-critique', { pageUrl: PAGE_A, runName: 'new' }));
     await getComments();
     expect(session.newPage).toBe(false);
@@ -163,7 +219,7 @@ describe('critique layout preference', () => {
     await openRun('home-design-critique');
     startNewPage();
     backToComments();
-    api.startRun.mockResolvedValue('home-design-critique-1');
+    api.startRun.mockResolvedValue(completed('home-design-critique-1'));
     api.readRun.mockResolvedValueOnce(runFor('home-design-critique-1', source));
 
     await syncRun();
@@ -271,7 +327,7 @@ describe('Sync comments', () => {
     disk.set('pageUrl', PAGE_B);
     session.draft.pageUrl = PAGE_B;
     session.run = runFor('a-design-critique', { pageUrl: PAGE_A, runName: 'a' });
-    api.startRun.mockResolvedValue('a-design-critique-1');
+    api.startRun.mockResolvedValue(completed('a-design-critique-1'));
     api.readRun.mockResolvedValue(runFor('a-design-critique-1', { pageUrl: PAGE_A, runName: 'a' }));
 
     await syncRun();
@@ -280,6 +336,38 @@ describe('Sync comments', () => {
     expect(session.run.id).toBe('a-design-critique-1');
     expect(disk.get('pageUrl')).toBe(PAGE_B);
     expect(session.draft.pageUrl).toBe(PAGE_B);
+  });
+
+  test('Sync can save a staged candidate without replacing the prior run until accepted', async () => {
+    const source = { pageUrl: PAGE_A, runName: 'home' };
+    session.run = runFor('home-design-critique', source);
+    api.startRun.mockResolvedValue(partial);
+    api.savePartialExport.mockResolvedValue('home-design-critique-1');
+    api.readRun.mockResolvedValue(runFor('home-design-critique-1', source));
+    api.readThreads.mockResolvedValue({ threads: [] });
+    api.readOutbox.mockResolvedValue({ actions: [] });
+
+    await syncRun();
+
+    expect(session.run.id).toBe('home-design-critique');
+    expect(session.pendingCandidate.summary.confirmedThreads).toBe(2);
+    await savePartialExport();
+
+    expect(session.run.id).toBe('home-design-critique-1');
+    expect(session.pendingCandidate).toBeNull();
+  });
+
+  test('Discard after Sync restores the previously displayed run', async () => {
+    session.run = runFor('home-design-critique', { pageUrl: PAGE_A, runName: 'home' });
+    api.startRun.mockResolvedValue(partial);
+    api.discardPartialExport.mockResolvedValue(undefined);
+
+    await syncRun();
+    await discardPartialExport();
+
+    expect(api.discardPartialExport).toHaveBeenCalledWith('candidate-1');
+    expect(session.run.id).toBe('home-design-critique');
+    expect(session.pendingCandidate).toBeNull();
   });
 
   test('a run without a source starts nothing and says to use New page', async () => {
@@ -333,7 +421,7 @@ describe('removing runs', () => {
       api.readRun.mockImplementation(async (id) => runFor(id, source));
       api.readThreads.mockResolvedValue(info);
       api.readOutbox.mockImplementation(async (id) => structuredClone(boxes[id]));
-      api.startRun.mockResolvedValue(newId);
+      api.startRun.mockResolvedValue(completed(newId));
 
       await openRun(oldId);
       expect(session.outbox.actions[0].text).toBe('Keep this draft');
@@ -369,7 +457,7 @@ describe('removing runs', () => {
         };
         return structuredClone(boxes[id]);
       });
-      api.startRun.mockResolvedValue(newId);
+      api.startRun.mockResolvedValue(completed(newId));
 
       await openRun(oldId);
       unlockCritique();
@@ -432,7 +520,7 @@ describe('removing runs', () => {
       api.readThreads.mockResolvedValue(info);
       api.readOutbox.mockImplementation(async (id) => structuredClone(boxes[id]));
       api.pushRun.mockRejectedValue('Figma returned 403. Check the token scope and file access in Settings.');
-      api.startRun.mockResolvedValue(newId);
+      api.startRun.mockResolvedValue(completed(newId));
 
       await openRun(oldId);
       session.unlocked = true;

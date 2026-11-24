@@ -13,6 +13,8 @@
     readyUpdateCount,
     reviewPush,
     session,
+    savePartialExport,
+    discardPartialExport,
     startNewPage,
     syncRun,
     toggleCritiqueLayout as updateLayout,
@@ -42,6 +44,10 @@
     const thread = session.threadInfo?.threads.find((item) => item.rootId === rootId);
     return thread ? `${thread.frame} — Pin ${thread.pin} (thread ${thread.rootId})` : `Thread ${rootId}`;
   }
+
+  function branchPath(branch) {
+    return branch.path.map(({ name, id }) => `${name} (${id})`).join(' / ');
+  }
 </script>
 
 <section class="screen">
@@ -65,7 +71,12 @@
         {#if session.run}
           <div class="toolbar">
             <div class="toolbar__start">
-              <button type="button" class="action" onclick={backToComments}>
+              <button
+                type="button"
+                class="action"
+                disabled={Boolean(session.pendingCandidate)}
+                onclick={backToComments}
+              >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6" /></svg>Back to Comments
               </button>
             </div>
@@ -87,6 +98,38 @@
   {/if}
   {#if session.notice}<pre class="log" aria-label="Output">{session.notice}</pre>{/if}
 
+  {#if session.pendingCandidate}
+    <section class="partial-decision" aria-labelledby="partial-decision-heading">
+      <h2 id="partial-decision-heading">Review partial export</h2>
+      <p>
+        {session.pendingCandidate.summary.confirmedThreads} confirmed threads. The scan could not check the whole page, so
+        additional comments might be missing.
+      </p>
+      {#if session.pendingCandidate.summary.unreadable.length}
+        <h3>Unreadable branches</h3>
+        <ul>
+          {#each session.pendingCandidate.summary.unreadable as branch (`unreadable:${branch.id}`)}
+            <li>{branchPath(branch)}</li>
+          {/each}
+        </ul>
+      {/if}
+      {#if session.pendingCandidate.summary.unexamined.length}
+        <h3>Not examined</h3>
+        <ul>
+          {#each session.pendingCandidate.summary.unexamined as branch (`unexamined:${branch.id}`)}
+            <li>{branchPath(branch)}</li>
+          {/each}
+        </ul>
+      {/if}
+      <div class="partial-decision__actions">
+        <button type="button" class="action" disabled={session.running} onclick={savePartialExport}>
+          Save partial export
+        </button>
+        <button type="button" class="action" disabled={session.running} onclick={discardPartialExport}>Discard</button>
+      </div>
+    </section>
+  {/if}
+
   {#if !session.running}
     {#if showForm}
       <form class="center page-form" onsubmit={(event) => (event.preventDefault(), getComments())}>
@@ -106,7 +149,7 @@
           <span>Run name (optional)</span>
           <input type="text" bind:value={session.draft.runName} placeholder="Defaults to the Figma page name" />
         </label>
-        <button type="submit" class="action">Get comments</button>
+        <button type="submit" class="action" disabled={Boolean(session.pendingCandidate)}>Get comments</button>
       </form>
     {:else}
       <div class="toolbar">
@@ -114,7 +157,7 @@
           <button
             type="button"
             class="action"
-            disabled={session.queueBusy || Boolean(session.review)}
+            disabled={session.queueBusy || Boolean(session.review) || Boolean(session.pendingCandidate)}
             onclick={startNewPage}
           >
             New page
@@ -150,7 +193,7 @@
             <button
               type="button"
               class="action"
-              disabled={session.transitionBusy || Boolean(session.review)}
+              disabled={session.transitionBusy || Boolean(session.review) || Boolean(session.pendingCandidate)}
               onclick={reviewPush}
             >
               Save {readyCount}
@@ -160,7 +203,10 @@
             <button
               type="button"
               class="action"
-              disabled={session.queueBusy || session.transitionBusy || Boolean(session.review)}
+              disabled={session.queueBusy ||
+                session.transitionBusy ||
+                Boolean(session.review) ||
+                Boolean(session.pendingCandidate)}
               onclick={syncRun}
             >
               Sync comments
@@ -172,7 +218,10 @@
             class="action edit-toggle"
             aria-label="Lock critique"
             aria-pressed={!session.unlocked}
-            disabled={!session.unlocked || session.transitionBusy || Boolean(session.review)}
+            disabled={!session.unlocked ||
+              session.transitionBusy ||
+              Boolean(session.review) ||
+              Boolean(session.pendingCandidate)}
             onclick={lockCritique}
           >
             <svg
@@ -201,7 +250,8 @@
               !session.outbox ||
               Boolean(session.actionsError) ||
               session.transitionBusy ||
-              Boolean(session.review)}
+              Boolean(session.review) ||
+              Boolean(session.pendingCandidate)}
             onclick={unlockCritique}
           >
             <svg
@@ -221,6 +271,9 @@
           </button>
         </div>
       </div>
+      {#if session.run.partial}
+        <p class="partial-label" role="status">Partial export</p>
+      {/if}
       <div class="scroll critique-container">
         {#if session.actionsLoading}
           <p class="muted" role="status">Loading thread actions...</p>
@@ -285,6 +338,44 @@
     align-items: center;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .partial-decision {
+    margin-block: 16px;
+    padding: 16px;
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    background: var(--card);
+  }
+
+  .partial-decision h2,
+  .partial-decision h3 {
+    margin-block: 0 8px;
+  }
+
+  .partial-decision p {
+    margin-block: 0 12px;
+  }
+
+  .partial-decision ul {
+    margin-block: 0 12px;
+    padding-inline-start: 24px;
+  }
+
+  .partial-decision__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .partial-label {
+    display: inline-block;
+    margin: 0 0 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--surface-item);
+    color: var(--ink);
+    font-weight: 700;
   }
 
   .toolbar__start button:hover {

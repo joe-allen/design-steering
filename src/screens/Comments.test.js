@@ -9,6 +9,8 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 vi.mock('../lib/api.js', () => ({
   detectNode: vi.fn(),
   startRun: vi.fn(),
+  savePartialExport: vi.fn(),
+  discardPartialExport: vi.fn(),
   listRuns: vi.fn(),
   readRun: vi.fn(),
   readThreads: vi.fn(),
@@ -31,6 +33,8 @@ const {
   deleteRun,
   readRun,
   startRun,
+  savePartialExport,
+  discardPartialExport,
   readThreads,
   readOutbox,
   queueReply,
@@ -45,11 +49,23 @@ const { default: Comments } = await import('./Comments.svelte');
 
 const PAGE_A = 'https://www.figma.com/design/A/f?node-id=1-1';
 const PAGE_B = 'https://www.figma.com/design/B/f?node-id=2-2';
+const completed = (runId) => ({ kind: 'completed', runId });
+const partial = {
+  kind: 'partialCandidate',
+  candidateId: 'candidate-1',
+  summary: {
+    confirmedThreads: 2,
+    unreadable: [{ id: 'bad-layer', path: [{ id: 'bad-layer', name: 'Screenshot' }] }],
+    unexamined: [{ id: 'unknown-layer', path: [{ id: 'unknown-layer', name: 'Not checked' }] }],
+  },
+};
 const makeRun = (id, pageUrl) => ({
   id,
   dir: `/data/runs/${id}`,
   markdown: `# Design critique\n\n- [ ] **1**: Comment in ${id} [Resolved]\n`,
   source: pageUrl ? { pageUrl, runName: 'home' } : null,
+  partial: false,
+  partialReport: null,
 });
 const RUN = makeRun('home-design-critique', PAGE_A);
 
@@ -57,6 +73,7 @@ function resetSession() {
   Object.assign(session, {
     screen: 'comments',
     run: null,
+    pendingCandidate: null,
     newPage: false,
     draft: { pageUrl: '', runName: '' },
     running: false,
@@ -86,6 +103,8 @@ beforeEach(() => {
   disk.set('token', 'figd_secret');
   for (const fn of [
     startRun,
+    savePartialExport,
+    discardPartialExport,
     readRun,
     readThreads,
     readOutbox,
@@ -173,13 +192,61 @@ describe('page input form', () => {
       user: false,
     });
 
-    finish('home-design-critique');
+    finish(completed('home-design-critique'));
     await screen.findByRole('heading', { name: 'Design critique' });
     expect(screen.getByText(/Comment in home-design-critique \[Resolved\]/)).toBeTruthy();
     expect(button('Sync comments')).toBeTruthy();
     expect(button('Download markdown')).toBeTruthy();
     expect(button('New page')).toBeTruthy();
     expect(screen.queryByText(/figd_secret/)).toBeNull();
+  });
+
+  test('Get comments presents a candidate summary and Save opens the accepted partial critique', async () => {
+    vi.mocked(startRun).mockResolvedValue(partial);
+    vi.mocked(savePartialExport).mockResolvedValue('partial-design-critique');
+    vi.mocked(readRun).mockResolvedValue({
+      ...makeRun('partial-design-critique', PAGE_A),
+      markdown: '# Partial\n\n## Partial export\n\nAdditional comments may be missing.',
+      partial: true,
+    });
+
+    render(Comments);
+    await userEvent.type(urlInput(), PAGE_A);
+    await userEvent.click(button('Get comments'));
+
+    expect(await screen.findByRole('heading', { name: 'Review partial export' })).toBeTruthy();
+    expect(screen.getByText(/2 confirmed threads/)).toBeTruthy();
+    expect(screen.getByText('Screenshot (bad-layer)')).toBeTruthy();
+    expect(screen.getByText('Not checked (unknown-layer)')).toBeTruthy();
+    expect(button('Get comments').disabled).toBe(true);
+
+    await userEvent.click(button('Save partial export'));
+
+    expect(savePartialExport).toHaveBeenCalledWith('candidate-1', expect.any(Function));
+    expect(await screen.findByRole('heading', { name: 'Partial' })).toBeTruthy();
+    expect(screen.getAllByText('Partial export').length).toBeGreaterThan(0);
+  });
+
+  test('Discard after Sync restores the displayed critique and disables conflicting actions while pending', async () => {
+    session.run = RUN;
+    vi.mocked(startRun).mockResolvedValue(partial);
+    vi.mocked(discardPartialExport).mockResolvedValue(undefined);
+    render(Comments);
+
+    await userEvent.click(button('Sync comments'));
+
+    expect(await screen.findByRole('heading', { name: 'Review partial export' })).toBeTruthy();
+    expect(button('Sync comments').disabled).toBe(true);
+    expect(button('New page').disabled).toBe(true);
+    expect(button('Unlock critique').disabled).toBe(true);
+    expect(screen.getByText(/Comment in home-design-critique/)).toBeTruthy();
+
+    await userEvent.click(button('Discard'));
+
+    expect(discardPartialExport).toHaveBeenCalledWith('candidate-1');
+    expect(screen.queryByRole('heading', { name: 'Review partial export' })).toBeNull();
+    expect(screen.getByText(/Comment in home-design-critique/)).toBeTruthy();
+    expect(button('Sync comments').disabled).toBe(false);
   });
 
   test('a failed run shows the error, no critique, and keeps what was typed', async () => {
@@ -219,6 +286,50 @@ describe('page input form', () => {
 });
 
 describe('critique layout', () => {
+  test('a reopened partial run keeps its warning in both layouts and after a complete Sync', async () => {
+    const oldId = 'home-design-critique';
+    const newId = 'home-design-critique-1';
+    const partialRun = {
+      ...makeRun(oldId, PAGE_A),
+      markdown: '# Recovered critique\n\n## Partial export\n\nAdditional comments may be missing.',
+      partial: true,
+      partialReport: { version: 1, confirmedThreads: 2, recoveryRequests: 4, unreadable: [], unexamined: [] },
+    };
+    const completeRun = {
+      ...makeRun(newId, PAGE_A),
+      markdown: '# Recovered critique\n\nThe repaired page was scanned completely.',
+    };
+    vi.mocked(readRun).mockImplementation(async (id) => (id === oldId ? partialRun : completeRun));
+    vi.mocked(readThreads).mockResolvedValue({ threads: [] });
+    vi.mocked(readOutbox).mockResolvedValue({ actions: [] });
+    vi.mocked(startRun).mockResolvedValue(completed(newId));
+
+    await initSession();
+    render(Comments);
+    await openRun(oldId);
+
+    expect(screen.getByText('Partial export', { selector: 'p.partial-label' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Partial export' })).toBeTruthy();
+    const toggle = button('Two-column layout');
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'));
+    expect(screen.getByText('Partial export', { selector: 'p.partial-label' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Partial export' })).toBeTruthy();
+
+    await userEvent.click(button('Sync comments'));
+    await screen.findByRole('heading', { name: 'Recovered critique' });
+    expect(session.run.id).toBe(newId);
+    expect(session.run.partial).toBe(false);
+    expect(screen.queryByText('Partial export', { selector: 'p.partial-label' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Partial export' })).toBeNull();
+
+    await openRun(oldId);
+    expect(session.run.partial).toBe(true);
+    expect(screen.getByText('Partial export', { selector: 'p.partial-label' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Partial export' })).toBeTruthy();
+    expect(pushRun).not.toHaveBeenCalled();
+  });
+
   test('the toggle persists both modes across reinitialization without changing the critique or fetching', async () => {
     session.run = RUN;
     const view = render(Comments);
@@ -263,7 +374,7 @@ describe('toolbar and New page', () => {
   test("Sync comments fetches the displayed run's own page", async () => {
     session.run = RUN;
     session.draft.pageUrl = PAGE_B;
-    vi.mocked(startRun).mockResolvedValue('home-design-critique-1');
+    vi.mocked(startRun).mockResolvedValue(completed('home-design-critique-1'));
     vi.mocked(readRun).mockResolvedValue(makeRun('home-design-critique-1', PAGE_A));
     render(Comments);
 
@@ -290,7 +401,7 @@ describe('toolbar and New page', () => {
       expect(screen.queryByRole('button', { name })).toBeNull();
     }
 
-    finish('home-design-critique-1');
+    finish(completed('home-design-critique-1'));
     await screen.findByText(/Comment in home-design-critique-1/);
     expect(button('Sync comments')).toBeTruthy();
     expect(button('New page')).toBeTruthy();
@@ -348,7 +459,7 @@ describe('toolbar and New page', () => {
     await userEvent.click(button('New page'));
     await userEvent.clear(urlInput());
     await userEvent.type(urlInput(), PAGE_B);
-    vi.mocked(startRun).mockResolvedValue('other-design-critique');
+    vi.mocked(startRun).mockResolvedValue(completed('other-design-critique'));
     vi.mocked(readRun).mockResolvedValue(makeRun('other-design-critique', PAGE_B));
 
     await userEvent.click(button('Get comments'));
@@ -934,7 +1045,7 @@ describe('download', () => {
         { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Keep on this run' },
       ]);
       const newId = 'home-design-critique-1';
-      vi.mocked(startRun).mockResolvedValue(newId);
+      vi.mocked(startRun).mockResolvedValue(completed(newId));
       vi.mocked(readRun).mockImplementation(async (id) => (id === newId ? makeRun(newId, PAGE_A) : RUN));
       vi.mocked(readOutbox).mockImplementation(async (id) =>
         id === RUN.id ? backend.get() : { version: 1, revision: 0, actions: [] },

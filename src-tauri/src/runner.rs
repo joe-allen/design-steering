@@ -86,7 +86,7 @@ pub enum RunOutcome {
 
 pub enum RunExecution {
     Completed { run_id: String },
-    Pending(StagedCandidate),
+    Pending(Box<StagedCandidate>),
 }
 
 pub struct StagedCandidate {
@@ -498,7 +498,7 @@ pub fn execute_run(
         }
     };
     if let Some(summary) = summary {
-        return Ok(RunExecution::Pending(StagedCandidate {
+        return Ok(RunExecution::Pending(Box::new(StagedCandidate {
             candidate_id,
             stage_root,
             staged_run_dir,
@@ -515,7 +515,7 @@ pub fn execute_run(
             },
             summary,
             user: settings.user,
-        }));
+        })));
     }
     let id = match publish_and_generate(
         plan,
@@ -1312,8 +1312,7 @@ console.log('Wrote it');
         let stage_root = candidate.stage_root.clone();
         let error = candidate
             .save(&|_| {})
-            .err()
-            .expect("generation failure should fail saving");
+            .expect_err("generation failure should fail saving");
         assert!(error.contains("generation failed"), "{error}");
         assert!(!stage_root.exists());
         assert_eq!(runs::list_runs_in(&plan.runs_dir).len(), 1);
@@ -1375,9 +1374,10 @@ console.log('Wrote it');
             return;
         }
         let (plan, root) = plan("record-fail");
-        let error = execute_run(&plan, &settings("https://figma.test/blockrecord"), &|_| {})
-            .err()
-            .expect("record failure should fail the run");
+        let error = match execute_run(&plan, &settings("https://figma.test/blockrecord"), &|_| {}) {
+            Err(error) => error,
+            Ok(_) => panic!("record failure should fail the run"),
+        };
         assert!(error.contains("Could not record the page"), "{error}");
         assert!(!plan
             .runs_dir
@@ -1413,9 +1413,10 @@ console.log('Wrote it');
             return;
         }
         let (plan, root) = plan("fail");
-        let error = execute_run(&plan, &settings("https://figma.test/fail"), &|_| {})
-            .err()
-            .expect("fetch failure should fail the run");
+        let error = match execute_run(&plan, &settings("https://figma.test/fail"), &|_| {}) {
+            Err(error) => error,
+            Ok(_) => panic!("fetch failure should fail the run"),
+        };
         assert!(error.contains("Figma returned 403"), "{error}");
         assert!(!plan
             .runs_dir

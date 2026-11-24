@@ -74,7 +74,7 @@ async fn start_run(
                 drop(guard);
                 return Err("A partial export is already awaiting a decision.".into());
             }
-            *pending = Some(runner::PendingRun::new(candidate, guard));
+            *pending = Some(runner::PendingRun::new(*candidate, guard));
             Ok(outcome)
         }
     }

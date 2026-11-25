@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/joe-allen/design-steering/compare/v0.2.0...v0.3.0) (2026-11-25)
+
+
+### Features
+
+* **viewer:** view frame images full size and review changes in a mod… ([#14](https://github.com/joe-allen/design-steering/issues/14)) ([0ea5031](https://github.com/joe-allen/design-steering/commit/0ea50319870ef1b8869cdf79789b9e062d1d4909))
+
+
+### Bug Fixes
+
+* **runner:** match Figma pins with page-scoped layer reads ([#12](https://github.com/joe-allen/design-steering/issues/12)) ([1b95ec4](https://github.com/joe-allen/design-steering/commit/1b95ec46f41049ea539b5673d455e7e4c23a54cc))
+
 ## [0.2.0](https://github.com/joe-allen/design-steering/compare/v0.1.1...v0.2.0) (2026-11-23)
 
 

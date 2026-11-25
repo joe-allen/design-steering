@@ -94,6 +94,12 @@
       </form>
     {/if}
   </div>
+  <div class="e-settings__footer muted text-sm">
+    <div class="e-settings__footer-start">
+      Logo credit: <a target="_blank" href="https://thenounproject.com/creator/zalhanilll/">@zalhanilll</a>
+    </div>
+    <div class="e-settings__footer-end">v [insert_version]</div>
+  </div>
 </section>
 
 <style>
@@ -148,11 +154,11 @@
     color: var(--danger);
   }
 
-  .footer {
+  .e-settings__footer {
     margin-block-start: 1rem;
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: 16px;
   }
 </style>

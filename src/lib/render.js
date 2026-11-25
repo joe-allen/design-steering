@@ -84,6 +84,20 @@ function sanitize(dirty, { runDir, toUrl = convertFileSrc, onFrame }) {
   }
 }
 
+/** Makes each frame image a button that opens the full-size viewer; linked images stay links. */
+function zoomableImages(fragment) {
+  for (const image of fragment.querySelectorAll('img')) {
+    if (image.closest('a[href]')) continue;
+    const anchor = image.parentElement?.tagName === 'A' ? image.parentElement : null;
+    const button = fragment.ownerDocument.createElement('button');
+    button.type = 'button';
+    button.className = 'image-zoom';
+    button.setAttribute('aria-label', `View ${image.alt || 'image'} full size`);
+    (anchor ?? image).replaceWith(button);
+    button.append(image);
+  }
+}
+
 function fragmentHtml(fragment) {
   const container = fragment.ownerDocument.createElement('div');
   container.append(fragment);
@@ -93,6 +107,7 @@ function fragmentHtml(fragment) {
 function critiqueFragment(markdown, options) {
   const dirty = marked.parse(markdown, { async: false, gfm: true });
   const fragment = sanitize(dirty, options);
+  zoomableImages(fragment);
   groupFrames(fragment);
   return fragment;
 }
@@ -294,7 +309,13 @@ export function prepareThreadCritique(markdown, options, threads) {
 }
 
 /** Link clicks never navigate the app; external links go to the system browser. */
-export function handleCritiqueClick(event, openExternal) {
+export function handleCritiqueClick(event, openExternal, openImage) {
+  const opener = event.target.closest?.('button.image-zoom');
+  const image = opener?.querySelector('img');
+  if (image) {
+    openImage?.({ src: image.getAttribute('src'), alt: image.getAttribute('alt') ?? '', opener });
+    return;
+  }
   const link = event.target.closest?.('a');
   if (!link) return;
   event.preventDefault();

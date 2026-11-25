@@ -74,7 +74,7 @@ describe('History screen', () => {
   test('lists runs in the order given, each labelled with date and name', async () => {
     render(History);
     await screen.findByRole('list');
-    expect(entries()).toEqual(['2026-11-10 - checkout', '2026-11-01 - home', '2026-10-01 - Home']);
+    expect(entries()).toEqual(['2026-11-10 checkout', '2026-11-01 home', '2026-10-01 Home']);
   });
 
   test('labels partial runs in History', async () => {
@@ -93,7 +93,7 @@ describe('History screen', () => {
     });
     render(History);
 
-    await userEvent.click(await screen.findByRole('button', { name: /2026-10-01 - Home.*Partial export/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /2026-10-01.*Home.*Partial export/ }));
 
     await waitFor(() => expect(session.screen).toBe('comments'));
     expect(session.run.partial).toBe(true);
@@ -106,11 +106,11 @@ describe('History screen', () => {
     const search = await screen.findByRole('searchbox', { name: 'Search' });
 
     await userEvent.type(search, 'CHECK');
-    expect(entries()).toEqual(['2026-11-10 - checkout']);
+    expect(entries()).toEqual(['2026-11-10 checkout']);
 
     await userEvent.clear(search);
     await userEvent.type(search, '2026-11-01');
-    expect(entries()).toEqual(['2026-11-01 - home']);
+    expect(entries()).toEqual(['2026-11-01 home']);
 
     await userEvent.clear(search);
     await userEvent.type(search, 'zzz');
@@ -134,7 +134,7 @@ describe('History screen', () => {
       source: null,
     });
     render(History);
-    await userEvent.click(await screen.findByRole('button', { name: '2026-11-01 - home' }));
+    await userEvent.click(await screen.findByRole('button', { name: '2026-11-01 home' }));
     await vi.waitFor(() => expect(session.screen).toBe('comments'));
     expect(readRun).toHaveBeenCalledWith('home-design-critique');
     expect(session.run.id).toBe('home-design-critique');
@@ -144,20 +144,20 @@ describe('History screen', () => {
 describe('removing runs', () => {
   test('removing one run asks first, then deletes only that run', async () => {
     render(History);
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 - home' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 home' }));
 
-    expect(screen.getByRole('alertdialog').textContent).toContain('2026-11-01 - home');
+    expect(screen.getByRole('alertdialog').textContent).toContain('2026-11-01 home');
     expect(deleteRun).not.toHaveBeenCalled();
 
     await userEvent.click(button('Remove'));
-    await waitFor(() => expect(entries()).toEqual(['2026-11-10 - checkout', '2026-10-01 - Home']));
+    await waitFor(() => expect(entries()).toEqual(['2026-11-10 checkout', '2026-10-01 Home']));
     expect(deleteRun).toHaveBeenCalledWith('home-design-critique');
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   test('cancelling a confirmation deletes nothing', async () => {
     render(History);
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 - home' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 home' }));
     await userEvent.click(button('Cancel'));
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(deleteRun).not.toHaveBeenCalled();
@@ -188,7 +188,7 @@ describe('removing runs', () => {
   test('removing the displayed run clears it from Comments', async () => {
     session.run = { id: 'home-design-critique', dir: '/d', markdown: '# x', source: null };
     render(History);
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 - home' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 home' }));
     await userEvent.click(button('Remove'));
     await waitFor(() => expect(session.run).toBeNull());
   });
@@ -196,11 +196,11 @@ describe('removing runs', () => {
   test('a failed removal shows the error and keeps the run listed', async () => {
     vi.mocked(deleteRun).mockRejectedValue('Could not remove run "home-design-critique": denied');
     render(History);
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 - home' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove 2026-11-01 home' }));
     await userEvent.click(button('Remove'));
 
     expect((await screen.findByRole('alert')).textContent).toContain('home-design-critique');
-    expect(entries()).toContain('2026-11-01 - home');
+    expect(entries()).toContain('2026-11-01 home');
   });
 
   test('a partial Remove all failure names the run left, keeps it listed and keeps the remembered page', async () => {
@@ -214,7 +214,7 @@ describe('removing runs', () => {
     await userEvent.click(button('Remove'));
 
     expect((await screen.findByRole('alert')).textContent).toContain('home-design-critique');
-    await waitFor(() => expect(entries()).toEqual(['2026-11-01 - home']));
+    await waitFor(() => expect(entries()).toEqual(['2026-11-01 home']));
     expect(disk.get('pageUrl')).toBe('https://figma.test/p');
   });
 
@@ -223,6 +223,6 @@ describe('removing runs', () => {
     render(History);
     await screen.findByRole('list');
     expect(button('Remove all').disabled).toBe(true);
-    expect(button('Remove 2026-11-01 - home').disabled).toBe(true);
+    expect(button('Remove 2026-11-01 home').disabled).toBe(true);
   });
 });

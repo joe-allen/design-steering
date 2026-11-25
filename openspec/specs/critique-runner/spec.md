@@ -41,7 +41,7 @@ A run SHALL execute the fetch script and then the generate script on the folder 
 
 #### Scenario: Successful run
 - **GIVEN** a valid token is saved and a page URL is given for the run
-- **WHEN** the user clicks "Get comments" or "Sync comments"
+- **WHEN** the user clicks "Get comments" or "Pull from Figma"
 - **THEN** a run folder containing the comments JSON, the frame images and the generated markdown exists, and the app shows its rendered markdown
 
 #### Scenario: Fetch fails
@@ -90,7 +90,7 @@ While a run is in progress the app SHALL show the scripts' output as it arrives 
 
 #### Scenario: Button disabled during run
 - **WHEN** a run is in progress
-- **THEN** the Comments screen shows a loading indicator and the current step in place of the page input form and the toolbar, so "Get comments", "Sync comments" and "New page" are unavailable until the run finishes or fails
+- **THEN** the Comments screen shows a loading indicator and the current step in place of the page input form and the toolbar, so "Get comments", "Pull from Figma" and "New page" are unavailable until the run finishes or fails
 
 ### Requirement: Token passed privately
 The app SHALL give the token to the scripts through the process environment and SHALL NOT place it on the command line.

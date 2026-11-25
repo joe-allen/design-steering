@@ -52,6 +52,11 @@ When a run finishes or is opened, the Comments screen SHALL show "New page", "Do
 - **WHEN** the critique is generated
 - **THEN** its Markdown has one checked item with a link to the root comment, and shows the replies beneath it without separate checkboxes
 
+#### Scenario: Resume tabbing after viewing a frame image
+- **GIVEN** the image viewer was opened from a frame image button
+- **WHEN** the viewer is dismissed
+- **THEN** focus returns to that button, even if opening it did not focus it, and Tab and Shift+Tab continue from there
+
 ### Requirement: Critique layout preference
 The viewer SHALL provide a layout toggle, defaulting to single column, and SHALL remember the selected layout across navigation, runs, and app restarts. Layout changes SHALL NOT modify saved markdown, downloads, or content sanitization. Preference read or write failures SHALL be reported without preventing the critique from being viewed.
 
@@ -178,11 +183,11 @@ The "New page" action SHALL show the page input form in place of the critique an
 - **THEN** the error is shown, the form keeps what the user entered, and "Back to Comments" still returns to the earlier critique
 
 ### Requirement: Sync comments
-The "Sync comments" action SHALL start a new run for the page the displayed critique came from, using that run's recorded page URL and run name, and SHALL show the new run when it succeeds. If the displayed run has no readable record, it SHALL not start a run and SHALL tell the user to use "New page".
+The "Pull from Figma" action SHALL start a new run for the page the displayed critique came from, using that run's recorded page URL and run name, and SHALL show the new run when it succeeds. If the displayed run has no readable record, it SHALL not start a run and SHALL tell the user to use "New page".
 
 #### Scenario: Sync an opened run
 - **GIVEN** a run for page A was opened from History and the last page entered on the form was page B
-- **WHEN** the user clicks "Sync comments"
+- **WHEN** the user clicks "Pull from Figma"
 - **THEN** a run starts for page A, not page B, and the new run is displayed when it succeeds
 
 #### Scenario: Sync keeps earlier runs
@@ -191,7 +196,7 @@ The "Sync comments" action SHALL start a new run for the page the displayed crit
 
 #### Scenario: Run record unreadable
 - **GIVEN** the displayed run's record is missing or unreadable
-- **WHEN** the user clicks "Sync comments"
+- **WHEN** the user clicks "Pull from Figma"
 - **THEN** no run starts and a message tells the user to use "New page"
 
 #### Scenario: Sync does not change the form
@@ -300,7 +305,12 @@ A check-mark reaction on the root comment by any Figma user SHALL count as done.
 - **THEN** it shows the done state without the "[Resolved]" label
 
 ### Requirement: Review and confirm a batch
-On an unlocked run, "Save N updates" SHALL replace "Sync comments" when there are actions ready to send. It SHALL open a review showing the destination, exact changes including reply text, and a notice that the saved token's account will be used. Only "Send to Figma" SHALL dispatch that reviewed batch.
+On an unlocked run, "Save N updates" SHALL replace "Pull from Figma" when there are actions ready to send. It SHALL open a review showing the exact changes including reply text, and a notice that the saved token's account will be used, with a "Figma" link to the destination that opens in the system browser. Only "Send to Figma" SHALL dispatch that reviewed batch.
+
+#### Scenario: Open the destination from the review
+- **GIVEN** the push review is open
+- **WHEN** the user clicks the "Figma" link in its notice
+- **THEN** the destination opens in the system browser, the app does not navigate away, and the review stays open
 
 #### Scenario: Review and cancel
 - **GIVEN** two actions are queued on the displayed run
@@ -309,12 +319,12 @@ On an unlocked run, "Save N updates" SHALL replace "Sync comments" when there ar
 
 #### Scenario: No queue to push
 - **WHEN** the displayed run has no actions ready to send
-- **THEN** the toolbar shows "Sync comments" instead of a Save action
+- **THEN** the toolbar shows "Pull from Figma" instead of a Save action
 
 #### Scenario: Count actions rather than threads or keystrokes
 - **GIVEN** the user drafts a reply and checks Done on the same thread
 - **WHEN** they revise the reply
-- **THEN** the toolbar still shows "Save 2 updates"; clearing the pending mark changes it to "Save 1 update", and discarding the reply restores "Sync comments"
+- **THEN** the toolbar still shows "Save 2 updates"; clearing the pending mark changes it to "Save 1 update", and discarding the reply restores "Pull from Figma"
 
 ### Requirement: Display delivery results
 The Comments screen SHALL show push progress and retain action-level results on the original run. It SHALL distinguish confirmed, definitely rejected, and uncertain outcomes. It SHALL offer recovery for unsent actions without resending confirmed ones or silently retrying an uncertain action.
@@ -337,7 +347,7 @@ The Comments screen SHALL show push progress and retain action-level results on 
 - **THEN** the app shows push progress and prevents concurrent pushes, fetches, edits of the outbox, or deletion of the runs
 
 ### Requirement: Keep push and sync separate
-Pushing SHALL NOT start a refresh run or write back into the generated critique. "Sync comments" SHALL only fetch and SHALL leave the original run and its outbox intact.
+Pushing SHALL NOT start a refresh run or write back into the generated critique. "Pull from Figma" SHALL only fetch and SHALL leave the original run and its outbox intact.
 
 #### Scenario: Revisit local actions
 - **GIVEN** there are queued or sent actions on a run
@@ -346,5 +356,5 @@ Pushing SHALL NOT start a refresh run or write back into the generated critique.
 
 #### Scenario: Fetch while there are still pending actions
 - **GIVEN** the user has locked the displayed run with actions still pending
-- **WHEN** the user uses "Sync comments" and it succeeds
+- **WHEN** the user uses "Pull from Figma" and it succeeds
 - **THEN** a fresh run is shown with no copied pending actions, nothing is posted, and the pending actions remain available on the earlier run in History

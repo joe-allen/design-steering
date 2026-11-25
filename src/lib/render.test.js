@@ -27,7 +27,15 @@ describe('renderCritique', () => {
     const image = content.querySelector('img');
     expect(image.getAttribute('src')).toBe(toUrl('/data/runs/home-design-critique/_frames/1-frame-a.png'));
     expect(image.hasAttribute('style')).toBe(false);
-    expect(content.querySelector('a')?.hasAttribute('href')).toBe(false);
+    expect(content.querySelector('a')).toBeNull();
+    expect(image.parentElement.matches('button.image-zoom[type=button]')).toBe(true);
+    expect(image.parentElement.getAttribute('aria-label')).toBe('View Frame 1 full size');
+  });
+
+  test('a linked image stays a link instead of becoming a zoom button', () => {
+    const content = dom(render('[![Frame 1](./_frames/1-a.png)](https://www.figma.com/design/x)'));
+    expect(content.querySelector('img').parentElement.getAttribute('href')).toBe('https://www.figma.com/design/x');
+    expect(content.querySelector('.image-zoom')).toBeNull();
   });
 
   test('each image paragraph and the comment list after it are grouped in a frame', () => {
@@ -131,6 +139,21 @@ describe('handleCritiqueClick', () => {
   test('other links do nothing', () => {
     const { event, openExternal } = click('<a><img data-target></a>');
     expect(event.defaultPrevented).toBe(true);
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  test('clicking a zoom button opens that image and does not open a link', () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<button class="image-zoom"><img src="asset://frame.png" alt="Frame 1"></button>';
+    const openExternal = vi.fn();
+    const openImage = vi.fn();
+    host.addEventListener('click', (e) => handleCritiqueClick(e, openExternal, openImage));
+    host.querySelector('img').click();
+    expect(openImage).toHaveBeenCalledWith({
+      src: 'asset://frame.png',
+      alt: 'Frame 1',
+      opener: host.querySelector('button'),
+    });
     expect(openExternal).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { disk } from '../test/fake-store.js';
@@ -124,6 +124,15 @@ beforeEach(() => {
 });
 
 const button = (name) => screen.getByRole('button', { name });
+// Only the action that is available (Unlock or Lock) is rendered.
+const expectLocked = () => {
+  expect(button('Unlock critique')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Lock critique' })).toBeNull();
+};
+const expectUnlocked = () => {
+  expect(button('Lock critique')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Unlock critique' })).toBeNull();
+};
 const urlInput = () => screen.getByLabelText(/Figma Page URL/);
 const nameInput = () => screen.getByLabelText(/Run name/);
 
@@ -134,7 +143,7 @@ describe('page input form', () => {
     expect(nameInput().value).toBe('');
     expect(button('Get comments')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Back to Comments' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Sync comments' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Pull from Figma' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Two-column layout' })).toBeNull();
   });
 
@@ -195,7 +204,7 @@ describe('page input form', () => {
     finish(completed('home-design-critique'));
     await screen.findByRole('heading', { name: 'Design critique' });
     expect(screen.getByText(/Comment in home-design-critique \[Resolved\]/)).toBeTruthy();
-    expect(button('Sync comments')).toBeTruthy();
+    expect(button('Pull from Figma')).toBeTruthy();
     expect(button('Download markdown')).toBeTruthy();
     expect(button('New page')).toBeTruthy();
     expect(screen.queryByText(/figd_secret/)).toBeNull();
@@ -233,10 +242,10 @@ describe('page input form', () => {
     vi.mocked(discardPartialExport).mockResolvedValue(undefined);
     render(Comments);
 
-    await userEvent.click(button('Sync comments'));
+    await userEvent.click(button('Pull from Figma'));
 
     expect(await screen.findByRole('heading', { name: 'Review partial export' })).toBeTruthy();
-    expect(button('Sync comments').disabled).toBe(true);
+    expect(button('Pull from Figma').disabled).toBe(true);
     expect(button('New page').disabled).toBe(true);
     expect(button('Unlock critique').disabled).toBe(true);
     expect(screen.getByText(/Comment in home-design-critique/)).toBeTruthy();
@@ -246,7 +255,7 @@ describe('page input form', () => {
     expect(discardPartialExport).toHaveBeenCalledWith('candidate-1');
     expect(screen.queryByRole('heading', { name: 'Review partial export' })).toBeNull();
     expect(screen.getByText(/Comment in home-design-critique/)).toBeTruthy();
-    expect(button('Sync comments').disabled).toBe(false);
+    expect(button('Pull from Figma').disabled).toBe(false);
   });
 
   test('a failed run shows the error, no critique, and keeps what was typed', async () => {
@@ -316,7 +325,7 @@ describe('critique layout', () => {
     expect(screen.getByText('Partial export', { selector: 'p.partial-label' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Partial export' })).toBeTruthy();
 
-    await userEvent.click(button('Sync comments'));
+    await userEvent.click(button('Pull from Figma'));
     await screen.findByRole('heading', { name: 'Recovered critique' });
     expect(session.run.id).toBe(newId);
     expect(session.run.partial).toBe(false);
@@ -370,15 +379,47 @@ describe('critique layout', () => {
   });
 });
 
+describe('image viewer', () => {
+  test.each(['click', 'cancel'])('closing via %s resumes tab order at the clicked image', async (dismiss) => {
+    session.run = {
+      ...RUN,
+      markdown: ['First', 'Second', 'Third'].map((name, i) => `![${name}](./_frames/${i + 1}-frame.png)`).join('\n\n'),
+    };
+    render(Comments);
+    const first = button('View First full size');
+    const opener = button('View Second full size');
+    const third = button('View Third full size');
+
+    // macOS WebKit can activate a button on click without moving focus to it.
+    first.focus();
+    await fireEvent.click(within(opener).getByRole('img'));
+    const viewer = screen.getByRole('dialog', { name: 'Second' });
+    if (dismiss === 'cancel') {
+      await fireEvent(viewer, new Event('cancel', { cancelable: true }));
+    } else {
+      await fireEvent.click(within(viewer).getByRole('img'));
+    }
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    await userEvent.tab();
+    expect(document.activeElement).toBe(third);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(opener);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(first);
+  });
+});
+
 describe('toolbar and New page', () => {
-  test("Sync comments fetches the displayed run's own page", async () => {
+  test("Pull from Figma fetches the displayed run's own page", async () => {
     session.run = RUN;
     session.draft.pageUrl = PAGE_B;
     vi.mocked(startRun).mockResolvedValue(completed('home-design-critique-1'));
     vi.mocked(readRun).mockResolvedValue(makeRun('home-design-critique-1', PAGE_A));
     render(Comments);
 
-    await userEvent.click(button('Sync comments'));
+    await userEvent.click(button('Pull from Figma'));
 
     await screen.findByText(/Comment in home-design-critique-1/);
     expect(vi.mocked(startRun).mock.calls[0][0]).toMatchObject({ pageUrl: PAGE_A, runName: 'home' });
@@ -394,23 +435,23 @@ describe('toolbar and New page', () => {
     vi.mocked(readRun).mockResolvedValue(makeRun('home-design-critique-1', PAGE_A));
     render(Comments);
 
-    await userEvent.click(button('Sync comments'));
+    await userEvent.click(button('Pull from Figma'));
 
     expect((await screen.findByRole('status')).textContent).toContain('Generating the critique');
-    for (const name of ['Get comments', 'Sync comments', 'New page', 'Download markdown', 'Back to Comments']) {
+    for (const name of ['Get comments', 'Pull from Figma', 'New page', 'Download markdown', 'Back to Comments']) {
       expect(screen.queryByRole('button', { name })).toBeNull();
     }
 
     finish(completed('home-design-critique-1'));
     await screen.findByText(/Comment in home-design-critique-1/);
-    expect(button('Sync comments')).toBeTruthy();
+    expect(button('Pull from Figma')).toBeTruthy();
     expect(button('New page')).toBeTruthy();
   });
 
   test('Sync on a run with no recorded page says to use New page', async () => {
     session.run = makeRun('old-design-critique', null);
     render(Comments);
-    await userEvent.click(button('Sync comments'));
+    await userEvent.click(button('Pull from Figma'));
     expect((await screen.findByRole('alert')).textContent).toContain('Use New page');
     expect(startRun).not.toHaveBeenCalled();
   });
@@ -424,14 +465,14 @@ describe('toolbar and New page', () => {
     expect(urlInput().value).toBe(PAGE_B);
     expect(nameInput().value).toBe('');
     expect(button('Back to Comments')).toBeTruthy();
-    for (const name of ['New page', 'Sync comments', 'Download markdown']) {
+    for (const name of ['New page', 'Pull from Figma', 'Download markdown']) {
       expect(screen.queryByRole('button', { name })).toBeNull();
     }
     expect(screen.queryByText(/Comment in home-design-critique/)).toBeNull();
 
     await userEvent.click(button('Back to Comments'));
     expect(screen.getByText(/Comment in home-design-critique/)).toBeTruthy();
-    expect(button('Sync comments')).toBeTruthy();
+    expect(button('Pull from Figma')).toBeTruthy();
     expect(startRun).not.toHaveBeenCalled();
   });
 
@@ -472,11 +513,11 @@ describe('toolbar and New page', () => {
     session.run = RUN;
     vi.mocked(deleteRun).mockResolvedValue(undefined);
     render(Comments);
-    expect(button('Sync comments')).toBeTruthy();
+    expect(button('Pull from Figma')).toBeTruthy();
 
     await removeRun('home-design-critique');
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sync comments' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Pull from Figma' })).toBeNull());
     expect(button('Get comments')).toBeTruthy();
   });
 });
@@ -607,7 +648,7 @@ describe('download', () => {
       session.critiqueLayoutReady = true;
       render(Comments);
 
-      expect(button('Lock critique').getAttribute('aria-pressed')).toBe('true');
+      expectLocked();
       expect(screen.queryByRole('button', { name: 'Reply' })).toBeNull();
       expect(screen.getByRole('checkbox', { name: 'Mark pin 1 done' }).disabled).toBe(true);
       expect(screen.getByAltText('Frame 1').closest('.frame')).toBeTruthy();
@@ -785,7 +826,7 @@ describe('download', () => {
       await userEvent.click(mark);
       await waitFor(() => expect(button('Save 1 update')).toBeTruthy());
       await userEvent.click(within(row).getByRole('button', { name: 'Discard reply' }));
-      await waitFor(() => expect(button('Sync comments')).toBeTruthy());
+      await waitFor(() => expect(button('Pull from Figma')).toBeTruthy());
       expect(backend.get().actions).toEqual([]);
       expect(pushRun).not.toHaveBeenCalled();
     });
@@ -856,9 +897,9 @@ describe('download', () => {
       await userEvent.click(button('Two-column layout'));
       expect(screen.getByLabelText('Reply to pin 1').value).toBe('Keep the last keystroke');
       await userEvent.click(button('Lock critique'));
-      await waitFor(() => expect(button('Lock critique').getAttribute('aria-pressed')).toBe('true'));
+      await waitFor(expectLocked);
       expect(backend.get().actions[0].text).toBe('Keep the last keystroke');
-      expect(button('Sync comments')).toBeTruthy();
+      expect(button('Pull from Figma')).toBeTruthy();
       expect(screen.getByText('Keep the last keystroke')).toBeTruthy();
       await userEvent.click(button('Unlock critique'));
       expect(screen.getByLabelText('Reply to pin 1').value).toBe('Keep the last keystroke');
@@ -877,13 +918,13 @@ describe('download', () => {
       await userEvent.type(screen.getByLabelText('Reply to pin 1'), 'Do not lose this');
       await userEvent.click(button('Lock critique'));
       expect((await screen.findByRole('alert')).textContent).toContain('Disk is full');
-      expect(button('Unlock critique').getAttribute('aria-pressed')).toBe('true');
+      expectUnlocked();
       expect(screen.getByLabelText('Reply to pin 1').value).toBe('Do not lose this');
       expect(backend.get().actions).toEqual([]);
       await userEvent.click(button('Retry saving draft'));
       await waitFor(() => expect(backend.get().actions[0]?.text).toBe('Do not lose this'));
       await userEvent.click(button('Lock critique'));
-      await waitFor(() => expect(button('Lock critique').getAttribute('aria-pressed')).toBe('true'));
+      await waitFor(expectLocked);
       expect(pushRun).not.toHaveBeenCalled();
     });
 
@@ -931,7 +972,7 @@ describe('download', () => {
       await userEvent.clear(draft);
       await userEvent.type(draft, 'Updated');
       await userEvent.click(button('Lock critique'));
-      await waitFor(() => expect(button('Lock critique').getAttribute('aria-pressed')).toBe('true'));
+      await waitFor(expectLocked);
       expect(backend.get().actions[0].text).toBe('Updated');
       expect(screen.queryByRole('alert')).toBeNull();
       expect(pushRun).not.toHaveBeenCalled();
@@ -990,6 +1031,53 @@ describe('download', () => {
       expect(pushRun).not.toHaveBeenCalled();
     });
 
+    test('native dialog cancellation keeps queued changes and allows reopening the review', async () => {
+      const backend = await actionsForRun([
+        { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Keep this reply' },
+      ]);
+      const showModal = vi.spyOn(HTMLDialogElement.prototype, 'showModal');
+      render(Comments);
+      await userEvent.click(button('Unlock critique'));
+      await userEvent.click(button('Save 1 update'));
+      const review = await screen.findByRole('dialog', { name: 'Review changes' });
+      expect(showModal).toHaveBeenCalledTimes(1);
+      expect(review.open).toBe(true);
+
+      review.dispatchEvent(new Event('cancel'));
+
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(session.review).toBeNull();
+      expect(backend.get().actions[0].text).toBe('Keep this reply');
+      expect(pushRun).not.toHaveBeenCalled();
+
+      await userEvent.click(button('Save 1 update'));
+      expect((await screen.findByRole('dialog', { name: 'Review changes' })).open).toBe(true);
+      expect(showModal).toHaveBeenCalledTimes(2);
+      await userEvent.click(button('Cancel'));
+      showModal.mockRestore();
+    });
+
+    test('clicking the backdrop cancels review but clicking its content or padding does not', async () => {
+      const backend = await actionsForRun([
+        { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Keep this reply' },
+      ]);
+      render(Comments);
+      await userEvent.click(button('Unlock critique'));
+      await userEvent.click(button('Save 1 update'));
+      const review = await screen.findByRole('dialog', { name: 'Review changes' });
+      vi.spyOn(review, 'getBoundingClientRect').mockReturnValue(new DOMRect(100, 100, 400, 300));
+
+      await userEvent.click(within(review).getByText('Keep this reply'));
+      review.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 120, clientY: 120 }));
+      expect(session.review).not.toBeNull();
+
+      review.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 20, clientY: 20 }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(session.review).toBeNull();
+      expect(backend.get().actions[0].text).toBe('Keep this reply');
+      expect(pushRun).not.toHaveBeenCalled();
+    });
+
     test('reviews the exact destination and batch, cancels, then confirms without refreshing', async () => {
       const backend = await actionsForRun([
         { id: 'action-1', rootId: 'root-1', kind: 'reply', status: 'pending', text: 'Exact reply\nSecond line' },
@@ -1001,14 +1089,21 @@ describe('download', () => {
         return new Promise((resolve) => (finish = resolve));
       });
       render(Comments);
-      expect(button('Sync comments')).toBeTruthy();
+      expect(button('Pull from Figma')).toBeTruthy();
       await userEvent.click(button('Unlock critique'));
       await userEvent.click(button('Save 2 updates'));
       let review = await screen.findByRole('dialog', { name: 'Review changes' });
-      expect(review.textContent).toContain(PAGE_A);
-      expect(review.textContent).toContain('Exact reply\nSecond line');
+      vi.mocked(openUrl).mockResolvedValue(undefined);
+      const destination = within(review).getByRole('link', { name: 'Figma' });
+      expect(destination.getAttribute('href')).toBe(PAGE_A);
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+      destination.dispatchEvent(click);
+      expect(click.defaultPrevented).toBe(true);
+      expect(openUrl).toHaveBeenCalledWith(PAGE_A);
+      expect(screen.getByRole('dialog', { name: 'Review changes' })).toBe(review);
+      expect(review.querySelector('.reply-text').textContent).toBe('Exact reply\nSecond line');
       expect(review.textContent).toContain('root-1');
-      expect(review.textContent).toContain('token saved in Settings');
+      expect(review.textContent.replace(/\s+/g, ' ')).toContain('token saved in Settings');
       await userEvent.click(within(review).getByRole('button', { name: 'Cancel' }));
       expect(pushRun).not.toHaveBeenCalled();
       expect(button('Save 2 updates')).toBeTruthy();
@@ -1017,7 +1112,7 @@ describe('download', () => {
       review = await screen.findByRole('dialog', { name: 'Review changes' });
       await userEvent.click(within(review).getByRole('button', { name: 'Send to Figma' }));
       expect((await screen.findByRole('status')).textContent).toContain('Pushing changes');
-      expect(screen.queryByRole('button', { name: 'Sync comments' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Pull from Figma' })).toBeNull();
       expect(pushRun).toHaveBeenCalledWith(RUN.id, 2, { token: 'figd_secret', nodePath: '' }, expect.any(Function));
       backend.set({
         version: 1,
@@ -1028,8 +1123,11 @@ describe('download', () => {
         ],
       });
       finish();
-      await screen.findByText(/Done mark · Rejected/);
-      expect(screen.getByText(/Reply · Sent/)).toBeTruthy();
+      // The status sits in its own element after the action kind.
+      const status = (text) =>
+        screen.findByText((_, el) => el?.tagName === 'SMALL' && el.textContent.replace(/\s+/g, ' ').trim() === text);
+      await status('Done mark Rejected');
+      await status('Reply Sent');
       expect(button('Save 1 update')).toBeTruthy();
       await userEvent.click(button('Save 1 update'));
       const retryReview = await screen.findByRole('dialog', { name: 'Review changes' });
@@ -1054,8 +1152,8 @@ describe('download', () => {
       await userEvent.click(button('Unlock critique'));
       expect(button('Save 1 update')).toBeTruthy();
       await userEvent.click(button('Lock critique'));
-      await waitFor(() => expect(button('Sync comments')).toBeTruthy());
-      await userEvent.click(button('Sync comments'));
+      await waitFor(() => expect(button('Pull from Figma')).toBeTruthy());
+      await userEvent.click(button('Pull from Figma'));
       await waitFor(() => expect(session.run.id).toBe(newId));
       expect(session.outbox.actions).toEqual([]);
       expect(backend.get().actions[0].text).toBe('Keep on this run');

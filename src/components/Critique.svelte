@@ -1,5 +1,6 @@
 <script>
   import { openUrl } from '@tauri-apps/plugin-opener';
+  import { modal } from '../lib/modal.js';
   import { handleCritiqueClick, prepareThreadCritique, renderCritique } from '../lib/render.js';
   import ThreadActions from './ThreadActions.svelte';
 
@@ -9,6 +10,9 @@
   const structured = $derived(
     threadInfo && outbox ? prepareThreadCritique(markdown, { runDir }, threadInfo.threads) : null,
   );
+
+  let viewedImage = $state(null);
+  const closeImage = () => (viewedImage = null);
 </script>
 
 {#snippet threadList(list)}
@@ -25,7 +29,11 @@
 {/snippet}
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="critique" class:grid={layout === 'grid'} onclick={(event) => handleCritiqueClick(event, openUrl)}>
+<div
+  class="critique"
+  class:grid={layout === 'grid'}
+  onclick={(event) => handleCritiqueClick(event, openUrl, (image) => (viewedImage = image))}
+>
   {#if structured}
     {#each structured.blocks as block, index (index)}
       {#if block.kind === 'frame'}
@@ -51,6 +59,19 @@
     {@html html}
   {/if}
 </div>
+
+{#if viewedImage}
+  <!-- Escape (the native cancel) is the keyboard path; clicking anywhere also closes. -->
+  <dialog
+    {@attach (dialog) => modal(dialog, viewedImage.opener)}
+    class="image-viewer"
+    aria-label={viewedImage.alt || 'Image'}
+    oncancel={closeImage}
+    onclick={closeImage}
+  >
+    <img src={viewedImage.src} alt={viewedImage.alt} />
+  </dialog>
+{/if}
 
 <style>
   .critique {
@@ -87,6 +108,58 @@
     inline-size: 100%;
   }
 
+  .critique :global(.image-zoom) {
+    display: block;
+    inline-size: 100%;
+    min-block-size: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+  }
+
+  .critique :global(.image-zoom::after) {
+    content: none;
+  }
+
+  .critique :global(.image-zoom:active) {
+    translate: none;
+    scale: none;
+  }
+
+  .critique :global(.image-zoom:focus) {
+    outline: none;
+  }
+
+  .critique :global(.image-zoom:focus-visible img) {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+
+  .image-viewer {
+    max-inline-size: 90vw;
+    max-block-size: 90dvh;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  .image-viewer:focus {
+    outline: none;
+  }
+
+  .image-viewer::backdrop {
+    background: rgb(0 0 0 / 85%);
+  }
+
+  .image-viewer img {
+    display: block;
+    max-inline-size: calc(90vw - 48px);
+    max-block-size: calc(90dvh - 48px);
+    object-fit: contain;
+  }
+
   .critique :global(ul) {
     padding: 0;
     list-style: none;
@@ -97,8 +170,15 @@
     margin-inline: 0;
   }
 
-  .critique :global(a) {
-    color: var(--accent);
+  /* when NOT in grid mode */
+  .critique > :global(.frame > ul > li:last-child) {
+    margin-block-end: 72px;
+    max-width: 72ch;
+  }
+
+  .critique > :global(.frame > ul > li) {
+    max-width: 72ch;
+    text-wrap: pretty;
   }
 
   @container screen (inline-size > 1024px) {
@@ -117,7 +197,7 @@
     .critique.grid > :global(.frame) {
       display: grid;
       grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
-      gap: 32px;
+      gap: 120px;
       align-items: start;
     }
 
@@ -141,6 +221,7 @@
       margin-block-start: 0;
     }
 
+    /* when in grid mode */
     .critique.grid > :global(.frame > ul > li:last-child) {
       padding-block-end: 1rem;
     }

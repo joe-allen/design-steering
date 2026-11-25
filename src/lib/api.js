@@ -9,6 +9,14 @@ export function startRun(settings, onEvent) {
   return invoke('start_run', { settings, onEvent: channel });
 }
 
+export function savePartialExport(candidateId, onEvent) {
+  const channel = new Channel();
+  channel.onmessage = onEvent;
+  return invoke('save_partial_export', { candidateId, onEvent: channel });
+}
+
+export const discardPartialExport = (candidateId) => invoke('discard_partial_export', { candidateId });
+
 export const listRuns = () => invoke('list_runs');
 export const readRun = (id) => invoke('read_run', { id });
 export const readThreads = (id) => invoke('read_threads', { id });

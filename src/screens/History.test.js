@@ -28,9 +28,9 @@ const { default: History } = await import('./History.svelte');
 
 const at = (iso) => new Date(iso).getTime();
 const RUNS = [
-  { id: 'checkout-design-critique', name: 'checkout', modifiedMs: at('2026-11-10T12:00:00') },
-  { id: 'home-design-critique', name: 'home', modifiedMs: at('2026-11-01T12:00:00') },
-  { id: 'Home-design-critique-1', name: 'Home', modifiedMs: at('2026-10-01T12:00:00') },
+  { id: 'checkout-design-critique', name: 'checkout', modifiedMs: at('2026-11-10T12:00:00'), partial: false },
+  { id: 'home-design-critique', name: 'home', modifiedMs: at('2026-11-01T12:00:00'), partial: false },
+  { id: 'Home-design-critique-1', name: 'Home', modifiedMs: at('2026-10-01T12:00:00'), partial: true },
 ];
 
 // Plays the backend: listRuns returns what is left after deletions.
@@ -60,10 +60,14 @@ beforeEach(() => {
     actionsLoading: false,
     queueBusy: false,
     review: null,
+    pendingCandidate: null,
   });
 });
 
-const entries = () => [...screen.getByRole('list').querySelectorAll('li .open')].map((button) => button.textContent);
+const entries = () =>
+  [...screen.getByRole('list').querySelectorAll('li .open')].map((button) =>
+    button.textContent.replace('Partial export', '').trim(),
+  );
 const button = (name) => screen.getByRole('button', { name });
 
 describe('History screen', () => {
@@ -71,6 +75,29 @@ describe('History screen', () => {
     render(History);
     await screen.findByRole('list');
     expect(entries()).toEqual(['2026-11-10 checkout', '2026-11-01 home', '2026-10-01 Home']);
+  });
+
+  test('labels partial runs in History', async () => {
+    render(History);
+    await screen.findByText('Partial export');
+    expect(screen.getByText('Partial export').closest('li').textContent).toContain('Home');
+  });
+
+  test('opening a partial History entry restores its partial metadata', async () => {
+    vi.mocked(readRun).mockResolvedValue({
+      id: 'Home-design-critique-1',
+      dir: '/d',
+      markdown: '# Recovered critique\n\n## Partial export',
+      partial: true,
+      partialReport: { version: 1, confirmedThreads: 1, recoveryRequests: 2, unreadable: [], unexamined: [] },
+    });
+    render(History);
+
+    await userEvent.click(await screen.findByRole('button', { name: /2026-10-01.*Home.*Partial export/ }));
+
+    await waitFor(() => expect(session.screen).toBe('comments'));
+    expect(session.run.partial).toBe(true);
+    expect(session.run.markdown).toContain('## Partial export');
   });
 
   test('search filters on name and date, ignoring case, and reports no matches', async () => {

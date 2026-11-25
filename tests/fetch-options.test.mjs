@@ -53,6 +53,110 @@ test('branch snapshots preserve root and reply identity alongside display fields
   assert.equal(rows[1].has_done_reaction, false);
 });
 
+test('a frame link exports deeply nested pins and replies when file-wide lookups return 500', () => {
+  const out = tempDir();
+  const result = runFetch(script, [`--out=${out}`], 'https://www.figma.com/design/LARGE/file?node-id=2-2');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /500.*retry/i);
+  assert.doesNotMatch(result.stderr, /No position for pin/);
+  const rows = JSON.parse(readFileSync(join(out, 'checkout-design-critique', 'checkout-figma-comments.json'), 'utf8'));
+  assert.deepEqual(
+    rows.map(({ id, frame, comment_thread }) => [id, frame, comment_thread]),
+    [
+      ['c1', '1. Frame A', '1'],
+      ['c2', '1. Frame A', '1'],
+    ],
+  );
+});
+
+test('a persistent Figma server error fails the fetch without writing a partial run', () => {
+  const out = tempDir();
+  const result = runFetch(script, [`--out=${out}`], 'https://www.figma.com/design/DOWN/file?node-id=1-1');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Figma returned 500 while matching pins to frames.*Try again later/i);
+  assert.deepEqual(readdirSync(out), []);
+});
+
+test('desktop recovery keeps confirmed ancestor and sibling threads when one layer branch stays unreadable', () => {
+  const out = tempDir();
+  const result = runFetch(
+    script,
+    [`--out=${out}`, '--desktop-partial'],
+    'https://www.figma.com/design/PARTIAL/file?node-id=1-1',
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const rows = JSON.parse(readFileSync(join(out, 'checkout-design-critique', 'checkout-figma-comments.json'), 'utf8'));
+  assert.deepEqual(
+    rows.map(({ id }) => id),
+    ['c1', 'c1-reply', 'c2'],
+  );
+  assert.equal(rows.filter(({ id }) => id === 'c1-reply').length, 1);
+  const report = JSON.parse(readFileSync(join(out, 'checkout-design-critique', 'partial-report.json'), 'utf8'));
+  assert.equal(report.version, 1);
+  assert.equal(report.confirmed_threads, 2);
+  assert.deepEqual(report.unreadable[0].path.slice(-1), [{ id: '6:2', name: 'Shared name' }]);
+  assert.deepEqual(report.unexamined, []);
+});
+
+test('desktop recovery stops at its finite request budget and reports unchecked branches separately', () => {
+  const out = tempDir();
+  const result = runFetch(
+    script,
+    [`--out=${out}`, '--desktop-partial'],
+    'https://www.figma.com/design/BUDGET/file?node-id=1-1',
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(readFileSync(join(out, 'checkout-design-critique', 'partial-report.json'), 'utf8'));
+  assert.equal(report.version, 1);
+  assert.equal(report.recovery_requests, 64);
+  assert.ok(report.unexamined.length > 0);
+  assert.ok(report.unreadable.length > 0);
+  assert.equal(report.confirmed_threads, 1);
+});
+
+test('a fully recovered desktop scan does not produce a partial report', () => {
+  const out = tempDir();
+  const result = runFetch(
+    script,
+    [`--out=${out}`, '--desktop-partial'],
+    'https://www.figma.com/design/LARGE/file?node-id=2-2',
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(join(out, 'checkout-design-critique', 'partial-report.json')), false);
+});
+
+test('an incomplete scan with no confirmed page threads cannot create a candidate', () => {
+  const out = tempDir();
+  const result = runFetch(
+    script,
+    [`--out=${out}`, '--desktop-partial'],
+    'https://www.figma.com/design/EMPTY_PARTIAL/file?node-id=1-1',
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /incomplete.*no comments could be confirmed.*nothing can be saved/i);
+  assert.deepEqual(readdirSync(out), []);
+});
+
+test('denied access, exhausted rate limit, and failed page or comments requests never create candidates', () => {
+  const cases = [
+    ['DENIED', /403/],
+    ['RATE', /429/],
+    ['PAGEFAIL', /500.*listing pages/],
+    ['COMMENTSFAIL', /500.*fetching comments/],
+  ];
+  for (const [key, message] of cases) {
+    const out = tempDir();
+    const result = runFetch(
+      script,
+      [`--out=${out}`, '--desktop-partial'],
+      `https://www.figma.com/design/${key}/file?node-id=1-1`,
+    );
+    assert.equal(result.status, 1, key);
+    assert.match(result.stderr, message, key);
+    assert.deepEqual(readdirSync(out), [], key);
+  }
+});
+
 test('default: run folder is created next to the script', () => {
   const dir = tempDir();
   const copy = join(dir, '_1-fetch-figma-comments.mjs');

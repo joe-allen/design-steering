@@ -78,6 +78,68 @@ console.log(`Reading ${jsonPath}`);
 
 const comments = JSON.parse(readFileSync(jsonPath, 'utf8'));
 
+function partialReportFor(dir) {
+  const path = join(dir, 'partial-report.json');
+  if (!existsSync(path)) return null;
+  let report;
+  try {
+    report = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    fail(`The partial report in ${dir} is invalid.`);
+  }
+  const validBranch = (branch) =>
+    branch &&
+    typeof branch.id === 'string' &&
+    branch.id.length > 0 &&
+    Array.isArray(branch.path) &&
+    branch.path.length > 0 &&
+    branch.path.at(-1)?.id === branch.id &&
+    branch.path.every(
+      (part) =>
+        typeof part.id === 'string' && part.id.length > 0 && typeof part.name === 'string' && part.name.length > 0,
+    );
+  if (
+    report.version !== 1 ||
+    !Number.isInteger(report.confirmed_threads) ||
+    report.confirmed_threads < 1 ||
+    !Array.isArray(report.unreadable) ||
+    !Array.isArray(report.unexamined) ||
+    (!report.unreadable.length && !report.unexamined.length) ||
+    ![...report.unreadable, ...report.unexamined].every(validBranch)
+  ) {
+    fail(`The partial report in ${dir} has unsupported or inconsistent contents.`);
+  }
+  return report;
+}
+
+function codeSpan(value) {
+  const text = String(value).replace(/\s+/g, ' ');
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map(([ticks]) => ticks.length));
+  const fence = '`'.repeat(longest + 1);
+  const padding = text.startsWith('`') || text.endsWith('`') || (text.startsWith(' ') && text.endsWith(' ')) ? ' ' : '';
+  return `${fence}${padding}${text}${padding}${fence}`;
+}
+
+const partialReport = partialReportFor(runDir);
+function renderPartialWarning(report) {
+  const sections = [
+    '## Partial export\n\n' +
+      `The scan confirmed ${report.confirmed_threads} thread${report.confirmed_threads === 1 ? '' : 's'}, but could not check the whole page. Additional comments may be missing.`,
+  ];
+  for (const [label, branches] of [
+    ['Unreadable branches', report.unreadable],
+    ['Not examined', report.unexamined],
+  ]) {
+    if (!branches.length) continue;
+    sections.push(
+      `### ${label}\n\n${branches
+        .map(({ path }) => `- ${path.map(({ name, id }) => `${codeSpan(name)} (${codeSpan(id)})`).join(' / ')}`)
+        .join('\n')}`,
+    );
+  }
+  return sections.join('\n\n');
+}
+
 const imagesByNumber = new Map();
 const framesDir = join(runDir, '_frames');
 if (existsSync(framesDir)) {
@@ -152,7 +214,9 @@ const titleFile = join(runDir, 'title.txt');
 const title =
   (existsSync(titleFile) && readFileSync(titleFile, 'utf8').replace(/\s+/g, ' ').trim()) || 'Design critique';
 
-const sections = [`# ${title}\n`, withImage.join('\n')];
+const sections = [`# ${title}\n`];
+if (partialReport) sections.push(renderPartialWarning(partialReport));
+sections.push(withImage.join('\n'));
 if (general.length) sections.push('## General comments\n', `${general.join('\n')}\n`);
 
 const outPath = join(runDir, `${basename(runDir)}.md`);

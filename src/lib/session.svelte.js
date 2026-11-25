@@ -10,7 +10,9 @@ import {
   readRun,
   readThreads,
   retryUncertain,
+  savePartialExport as savePartialExportCommand,
   startRun,
+  discardPartialExport as discardPartialExportCommand,
 } from './api.js';
 import {
   forgetPage,
@@ -25,6 +27,7 @@ import {
 export const session = $state({
   screen: 'comments',
   run: null,
+  pendingCandidate: null,
   critiqueLayout: 'single',
   critiqueLayoutReady: false,
   critiqueLayoutSaving: false,
@@ -158,6 +161,7 @@ export async function toggleCritiqueLayout() {
 }
 
 export async function openRun(id) {
+  if (session.pendingCandidate) return;
   if (session.run && !(await finishLocalChanges())) return;
   const version = ++openVersion;
   session.screen = 'comments';
@@ -178,7 +182,7 @@ export async function openRun(id) {
 }
 
 async function performRun({ pageUrl, runName }, { remember }) {
-  if (session.running || session.queueBusy) return;
+  if (session.running || session.queueBusy || session.pendingCandidate) return;
   session.error = null;
   session.errorNeedsSettings = false;
   session.urlError = null;
@@ -211,12 +215,66 @@ async function performRun({ pageUrl, runName }, { remember }) {
 
   session.running = true;
   try {
-    const id = await startRun({ ...settings, pageUrl: url, runName: runName.trim() }, (event) => {
+    const outcome = await startRun({ ...settings, pageUrl: url, runName: runName.trim() }, (event) => {
       if (event.kind === 'step') session.step = event.step;
       else session.log.push(event.line);
     });
+    if (outcome?.kind === 'completed' && outcome.runId) {
+      await openRun(outcome.runId);
+    } else if (outcome?.kind === 'partialCandidate' && outcome.candidateId && outcome.summary) {
+      session.pendingCandidate = {
+        candidateId: outcome.candidateId,
+        summary: outcome.summary,
+      };
+    } else {
+      throw new Error('The run returned an unsupported outcome.');
+    }
+  } catch (error) {
+    session.error = String(error);
+  } finally {
+    session.running = false;
+    session.step = null;
+  }
+}
+
+export async function savePartialExport() {
+  const candidate = session.pendingCandidate;
+  if (!candidate || session.running) return;
+  session.running = true;
+  session.step = 'generate';
+  session.log = [];
+  session.error = null;
+  session.errorNeedsSettings = false;
+  session.notice = null;
+  try {
+    const id = await savePartialExportCommand(candidate.candidateId, (event) => {
+      if (event.kind === 'step') session.step = event.step;
+      else session.log.push(event.line);
+    });
+    session.pendingCandidate = null;
     await openRun(id);
   } catch (error) {
+    session.pendingCandidate = null;
+    session.error = String(error);
+  } finally {
+    session.running = false;
+    session.step = null;
+  }
+}
+
+export async function discardPartialExport() {
+  const candidate = session.pendingCandidate;
+  if (!candidate || session.running) return;
+  session.running = true;
+  session.step = 'discard';
+  session.error = null;
+  session.errorNeedsSettings = false;
+  session.notice = null;
+  try {
+    await discardPartialExportCommand(candidate.candidateId);
+    session.pendingCandidate = null;
+  } catch (error) {
+    session.pendingCandidate = null;
     session.error = String(error);
   } finally {
     session.running = false;
@@ -240,6 +298,7 @@ export async function syncRun() {
 }
 
 export async function startNewPage() {
+  if (session.pendingCandidate) return;
   if ((session.queueBusy || session.replyDrafts.some(needsDraftSave)) && !(await finishLocalChanges())) return;
   session.review = null;
   session.newPage = true;
@@ -259,7 +318,8 @@ export function backToComments() {
 
 /** Each removal returns an error message, or null when it succeeded. */
 export async function removeRun(id) {
-  if (session.running || session.queueBusy) return 'A run is in progress. Try again when it has finished.';
+  if (session.running || session.queueBusy || session.pendingCandidate)
+    return 'A run is in progress. Try again when it has finished.';
   try {
     await deleteRun(id);
   } catch (error) {
@@ -274,7 +334,8 @@ export async function removeRun(id) {
 }
 
 export async function removeAllRuns() {
-  if (session.running || session.queueBusy) return 'A run is in progress. Try again when it has finished.';
+  if (session.running || session.queueBusy || session.pendingCandidate)
+    return 'A run is in progress. Try again when it has finished.';
   try {
     await deleteAllRuns();
   } catch (error) {
@@ -320,7 +381,7 @@ export function readyUpdateCount(outbox, drafts) {
 
 function changeQueue(command, ...args) {
   const id = session.run?.id;
-  if (session.running || session.review || !id || !session.outbox || session.actionsError)
+  if (session.running || session.pendingCandidate || session.review || !id || !session.outbox || session.actionsError)
     return Promise.resolve(false);
   queuedOperations++;
   session.queueBusy = true;
@@ -374,6 +435,7 @@ export function openReplyEditor(rootId) {
   if (
     !session.unlocked ||
     session.running ||
+    session.pendingCandidate ||
     session.review ||
     session.transitionBusy ||
     !session.threadInfo?.threads.some((thread) => thread.rootId === rootId)
@@ -501,7 +563,15 @@ async function flushDrafts() {
 
 export async function discardDraft(key) {
   const draft = session.replyDrafts.find((item) => item.key === key);
-  if (!draft || draft.discarding || session.running || session.review || session.transitionBusy) return;
+  if (
+    !draft ||
+    draft.discarding ||
+    session.running ||
+    session.pendingCandidate ||
+    session.review ||
+    session.transitionBusy
+  )
+    return;
   draft.discarding = true;
   if (draftFlush) await draftFlush;
   const action = session.outbox?.actions.find((item) => item.id === draft.actionId);
@@ -531,13 +601,14 @@ export async function finishLocalChanges() {
 }
 
 export async function lockCritique() {
-  if (!session.unlocked || session.running || session.review) return;
+  if (!session.unlocked || session.running || session.pendingCandidate || session.review) return;
   if (await finishLocalChanges()) session.unlocked = false;
 }
 
 export function unlockCritique() {
   if (
     !session.running &&
+    !session.pendingCandidate &&
     !session.review &&
     !session.transitionBusy &&
     session.threadInfo &&
@@ -549,12 +620,21 @@ export function unlockCritique() {
 }
 
 export async function navigateTo(screen) {
+  if (session.pendingCandidate) return;
   if (screen !== session.screen && !(await finishLocalChanges())) return;
   session.screen = screen;
 }
 
 export async function reviewPush() {
-  if (session.running || session.review || !session.unlocked || !session.run || !session.threadInfo || !session.outbox)
+  if (
+    session.running ||
+    session.pendingCandidate ||
+    session.review ||
+    !session.unlocked ||
+    !session.run ||
+    !session.threadInfo ||
+    !session.outbox
+  )
     return;
   if (!(await finishLocalChanges())) return;
   if (session.actionsError) {
@@ -579,7 +659,7 @@ export function cancelPushReview() {
 
 export async function confirmPush() {
   const review = session.review && $state.snapshot(session.review);
-  if (!review || session.running || session.queueBusy) return;
+  if (!review || session.running || session.pendingCandidate || session.queueBusy) return;
   if (
     session.run?.id !== review.runId ||
     session.outbox?.revision !== review.revision ||

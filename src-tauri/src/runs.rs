@@ -15,6 +15,76 @@ pub struct RunSource {
     pub run_name: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerPathPart {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialBranch {
+    pub id: String,
+    pub path: Vec<LayerPathPart>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PartialReport {
+    pub version: u32,
+    #[serde(rename = "confirmed_threads")]
+    pub confirmed_threads: usize,
+    #[serde(rename = "recovery_requests")]
+    pub recovery_requests: usize,
+    pub unreadable: Vec<PartialBranch>,
+    pub unexamined: Vec<PartialBranch>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PartialSummary {
+    pub confirmed_threads: usize,
+    pub unreadable: Vec<PartialBranch>,
+    pub unexamined: Vec<PartialBranch>,
+}
+
+impl PartialReport {
+    fn validate(&self) -> Result<(), String> {
+        let valid_branches = self
+            .unreadable
+            .iter()
+            .chain(&self.unexamined)
+            .all(|branch| {
+                !branch.id.is_empty()
+                    && !branch.path.is_empty()
+                    && branch.path.last().is_some_and(|part| {
+                        part.id == branch.id && !part.id.is_empty() && !part.name.is_empty()
+                    })
+            });
+        if self.version != 1
+            || self.confirmed_threads == 0
+            || (self.unreadable.is_empty() && self.unexamined.is_empty())
+            || !valid_branches
+        {
+            return Err("The partial report has unsupported or inconsistent contents.".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn read_partial_report(run_dir: &Path) -> Result<Option<PartialReport>, String> {
+    let path = run_dir.join("partial-report.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("Could not read the partial report: {error}"))?;
+    let report: PartialReport = serde_json::from_str(&text)
+        .map_err(|error| format!("The partial report is invalid: {error}"))?;
+    report.validate()?;
+    Ok(Some(report))
+}
+
 pub fn write_source(run_dir: &Path, source: &RunSource) -> Result<(), String> {
     let text = serde_json::to_string_pretty(source).map_err(|error| error.to_string())?;
     fs::write(run_dir.join(SOURCE_FILE), text)
@@ -34,6 +104,7 @@ pub struct RunSummary {
     /// Run name shown in History.
     pub name: String,
     pub modified_ms: u64,
+    pub partial: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -45,6 +116,8 @@ pub struct RunContent {
     pub dir: String,
     /// Where the run came from; `None` when the record is missing or unreadable.
     pub source: Option<RunSource>,
+    pub partial: bool,
+    pub partial_report: Option<PartialReport>,
 }
 
 /// `<name>-design-critique` or `<name>-design-critique-<n>` with only letters, digits and dashes.
@@ -82,10 +155,12 @@ pub fn list_runs_in(runs_dir: &Path) -> Vec<RunSummary> {
             let id = entry.file_name().to_str()?.to_string();
             let name = parse_run_folder(&id)?.to_string();
             let modified_ms = modified_ms(&entry.path().join(format!("{id}.md")))?;
+            let partial = entry.path().join("partial-report.json").exists();
             Some(RunSummary {
                 id,
                 name,
                 modified_ms,
+                partial,
             })
         })
         .collect();
@@ -115,6 +190,7 @@ pub fn resolve_run(runs_dir: &Path, id: &str) -> Result<PathBuf, String> {
 
 pub fn read_run_in(runs_dir: &Path, id: &str) -> Result<RunContent, String> {
     let dir = resolve_run(runs_dir, id)?;
+    let partial_report = read_partial_report(&dir)?;
     let markdown = fs::read_to_string(dir.join(format!("{id}.md")))
         .map_err(|error| format!("Could not read the critique for \"{id}\": {error}"))?;
     Ok(RunContent {
@@ -122,6 +198,8 @@ pub fn read_run_in(runs_dir: &Path, id: &str) -> Result<RunContent, String> {
         markdown,
         dir: dir.display().to_string(),
         source: read_source(&dir),
+        partial: partial_report.is_some(),
+        partial_report,
     })
 }
 
@@ -196,6 +274,7 @@ fn copy_snapshot(from: &Path, to: &Path, id: &str) -> io::Result<()> {
         } else if kind.is_file()
             && (name == format!("{id}.md")
                 || name == SOURCE_FILE
+                || name == "partial-report.json"
                 || name == "title.txt"
                 || is_comments_snapshot(name))
         {
@@ -208,6 +287,7 @@ fn copy_snapshot(from: &Path, to: &Path, id: &str) -> io::Result<()> {
 /// Copies shareable snapshot files using the next free folder suffix without overwriting.
 pub fn copy_run_to(runs_dir: &Path, id: &str, dest: &Path) -> Result<PathBuf, String> {
     let source = resolve_run(runs_dir, id)?;
+    read_partial_report(&source)?;
     if !dest.is_dir() {
         return Err(format!("{} is not a folder.", dest.display()));
     }
@@ -297,6 +377,67 @@ mod tests {
         );
         assert_eq!(listed[1].name, "mid");
         assert!(listed[0].modified_ms > listed[2].modified_ms);
+        let _ = fs::remove_dir_all(&runs);
+    }
+
+    #[test]
+    fn partial_metadata_is_read_and_copied_without_private_outbox_files() {
+        let runs = temp_dir("partial-metadata");
+        let dest = temp_dir("partial-download");
+        make_run(&runs, "partial-design-critique", 1, true);
+        let run_dir = runs.join("partial-design-critique");
+        fs::write(
+            run_dir.join("partial-report.json"),
+            serde_json::to_vec(&PartialReport {
+                version: 1,
+                confirmed_threads: 2,
+                recovery_requests: 4,
+                unreadable: vec![PartialBranch {
+                    id: "bad-node".into(),
+                    path: vec![LayerPathPart {
+                        id: "bad-node".into(),
+                        name: "Unreadable layer".into(),
+                    }],
+                }],
+                unexamined: vec![],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            run_dir.join("partial-design-critique.md"),
+            "# Partial export",
+        )
+        .unwrap();
+        fs::write(run_dir.join("outbox.json"), "private outbox").unwrap();
+
+        assert!(list_runs_in(&runs)[0].partial);
+        let content = read_run_in(&runs, "partial-design-critique").unwrap();
+        assert!(content.partial);
+        assert_eq!(content.partial_report.unwrap().confirmed_threads, 2);
+        let downloaded = copy_run_to(&runs, "partial-design-critique", &dest).unwrap();
+        assert!(downloaded.join("partial-report.json").is_file());
+        assert!(downloaded.join("partial-design-critique.md").is_file());
+        assert!(!downloaded.join("outbox.json").exists());
+        assert!(!downloaded.join("partial-staging").exists());
+
+        let _ = fs::remove_dir_all(&runs);
+        let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn malformed_partial_metadata_is_not_treated_as_a_complete_run() {
+        let runs = temp_dir("invalid-partial-metadata");
+        make_run(&runs, "partial-design-critique", 1, true);
+        let report = runs
+            .join("partial-design-critique")
+            .join("partial-report.json");
+        fs::write(&report, "{\"version\":99}").unwrap();
+
+        assert!(list_runs_in(&runs)[0].partial);
+        assert!(read_run_in(&runs, "partial-design-critique")
+            .unwrap_err()
+            .contains("partial report"));
         let _ = fs::remove_dir_all(&runs);
     }
 

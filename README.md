@@ -149,7 +149,7 @@ Each `fetch` creates a run folder next to the scripts, named after the Figma pag
 
 ## How it works and limits
 
-- Figma's comments API returns every comment in the file. The fetch script keeps only comments pinned to a node on the chosen page.
+- Figma's comments API returns every comment in the file. The fetch script reads the page list, then matches pins against the selected page's layers in small, depth-limited batches. A top-level frame link resolves to its page, so comments on sibling frames are included too.
 - Comments are grouped by their top-level frame on the page. Frames are numbered by their highest pin number, newest first.
 - Replies share their thread's pin number and frame. Only the thread's first comment gets a circle.
 - Circle positions come from each comment's offset within the node it is pinned to, converted to the top-level frame. Comments with no usable offset get no circle, and a warning is printed.
@@ -159,9 +159,11 @@ Each `fetch` creates a run folder next to the scripts, named after the Figma pag
 
 ## Troubleshooting
 
+- If the app offers **Save partial export** after a layer-read error, see [FAQ.md](FAQ.md) for what the report means and a non-destructive workaround.
 - `Missing Figma PAT` / `Missing page URL`: set them in `.env` or pass them as options.
 - `403`: check whether the token is invalid, expired, missing a scope, or belongs to an account without file access.
 - `404`: the file key is wrong or the token's account cannot open the file.
+- `500`, `502`, `503`, or `504`: fetch retries the Figma request once. If it still fails, try again later.
 - `node-id ... is not a page or a top-level frame`: use the page's own link. The error lists the pages it found.
 - `No *-design-critique/ run folder`: run `npm run fetch` first.
 - A run without `_frames/` (fetched with `--images=false`) is fine: every comment is listed under "General comments".
